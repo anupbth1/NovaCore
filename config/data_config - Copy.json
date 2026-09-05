@@ -1,0 +1,24 @@
+{
+  "hf": {
+    "default_split": "train",
+    "login_prompt": "token from https://huggingface.co/settings/tokens",
+    "auto_columns": ["text", "content", "document", "body", "story", "instruction", "instructions", "prompt", "task", "input", "context", "question", "query", "output", "answer", "answers", "response", "completion", "reasoning", "reason", "rationale", "explanation", "analysis", "thinking", "thought", "chain_of_thought", "cot", "solution", "solution_steps", "steps", "plan", "planning", "messages", "conversation", "dialogue", "role"],
+    "download_rows_per_file": 10000
+  },
+  "datasets": {
+    "openbmb/UltraData-SFT-2605": {
+      "subset": [
+        { "name": "Math", "split": "no_think", "max_rows": 100000 },
+        { "name": "Multi-lang-Knowledge", "split": "no_think", "max_rows": 100000 },
+        { "name": "Knowledge", "split": "think", "max_rows": 100000 }
+      ]
+    },
+    "HuggingFaceH4/no_robots": { "split": "train", "max_rows": "full" },
+    "OpenAssistant/oasst2": { "split": "train", "max_rows": "full" },
+    "OpenAssistant/oasst1": { "split": "train", "max_rows": "full" },
+    "rajpurkar/squad": { "split": "train", "max_rows": "full" },
+    "rajpurkar/squad_v2": { "split": "train", "max_rows": "full" },
+    "tatsu-lab/alpaca": { "split": "train", "max_rows": "full" },
+    "roneneldan/TinyStories": { "split": "train", "max_rows": "full" }
+  }
+}

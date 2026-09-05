@@ -1,0 +1,159 @@
+{
+  "defaults": {
+    "dim": 512,
+    "layers": 4,
+    "vocab_size": 30000,
+    "max_tokens": 80,
+    "chat_context_tokens": 200,
+    "temperature": 0.8,
+    "max_history": 10,
+    "seed": 42,
+    "hasher_depth": 4,
+    "hasher_buckets_multiplier": 4,
+    "hasher_seed_stride": 7919,
+    "reservoir_seed": 42,
+    "reservoir_sample_size": 20000,
+    "reservoir_merge_multiplier": 4,
+    "pattern_vocab_cap": 100000,
+    "pattern_sample_cap": 50000,
+    "analytic_target_dim": 512,
+    "ngram_range": [2, 4],
+    "ram_safe_overrides": {
+      "max_tokens": 80,
+      "vocab_size": 20000,
+      "pattern_vocab_cap": 50000,
+      "pattern_sample_cap": 30000,
+      "reservoir_sample_size": 50000,
+      "reservoir_merge_multiplier": 4
+    },
+
+    "neural_engine": {
+      "enabled": true,
+      "input_dim": 64,
+      "hidden_dim": 32,
+      "output_dim": 16,
+      "activation_cache_size": 100,
+      "use_fast_sigmoid": true,
+      "enable_caching": true
+    },
+
+    "virtual_simulation": {
+      "enabled": true,
+      "quality_threshold": 0.4,
+      "enable_caching": true,
+      "cache_size": 1000,
+      "scoring_weights": {
+        "length": 0.4,
+        "relevance": 0.4,
+        "coherence": 0.2
+      }
+    },
+
+    "verification_engine": {
+      "enabled": true,
+      "max_retries": 2,
+      "min_score": 0.3,
+      "enable_caching": true,
+      "reservoir_search_limit": 200,
+      "enable_fast_retry": true
+    },
+
+    "python_terminal": {
+      "enabled": true,
+      "safe_mode": true,
+      "max_execution_time_ms": 5000,
+      "allowed_operations": ["print", "math", "variables", "loops", "conditionals"]
+    },
+
+    "chat": {
+      "max_history": 10,
+      "context_tokens": 200,
+      "generation_history_tokens": 10,
+      "use_model_brain": true
+    },
+
+    "artifact_patterns": [
+      "<instruction>.*?</instruction>",
+      "</?instruction>",
+      "<answer>.*?</answer>",
+      "</?answer>",
+      "<text>.*?</text>",
+      "</?text>",
+      "<input>.*?</input>",
+      "</?input>",
+      "<user>.*?</user>",
+      "</?user>",
+      "<assistant>.*?</assistant>",
+      "</?assistant>",
+      "<output>.*?</output>",
+      "</?output>",
+      "###\\s*Instruction:.*?###\\s*Response:",
+      "Below is an instruction.*?###\\s*Response:",
+      "Write a response that appropriately completes the request\\.\\s*",
+      "The request\\.\\s*",
+      "The following sentence.*?###\\s*Response:\\s*",
+      "<\\|im_start\\|>.*?<\\|im_end\\|>",
+      "```output\\s*"
+    ],
+
+    "training_upgrades": {
+      "enable_svd_embeddings": true,
+      "svd_vocab_size": 5000,
+      "svd_dim": 128,
+      "enable_idf_weighting": true,
+      "enable_pattern_hierarchy": true,
+      "max_hierarchy_depth": 3,
+      "enable_confidence_scoring": true,
+      "confidence_min_freq": 3,
+      "enable_multi_head_reservoir": true,
+      "num_reservoir_heads": 5,
+      "reservoir_head_sample_size": 10000,
+      "cooccurrence_window": 5,
+      "quantize_embeddings": true,
+      "quantize_bit_width": 8,
+      "enable_semantic_search": true
+    },
+
+    "streaming": {
+      "enabled": false,
+      "batch_size": 1000,
+      "prefetch_batches": 2,
+      "shuffle_buffer": 5000,
+      "stream_epochs": 1,
+      "reservoir_max_chars": 4096,
+      "reasoning_extract_cap": 50000,
+      "creative_extract_cap": 50000,
+      "memory_cleanup_interval": 500000
+    }
+  },
+
+  "paths": {
+    "default_weights": "weights",
+    "data_dir": "data",
+    "hf_data": "data/hf_data",
+    "hf_cache": "data/hf_cache",
+    "config_loaded": true
+  },
+
+  "cli": {
+    "preview_rows": 10,
+    "compress_ratio": 0.5
+  },
+
+  "train": {
+    "default_format": "train"
+  },
+
+  "tokenizer": {
+    "type": "whitespace"
+  },
+
+  "pattern_vocab_cap": 100000,
+  "pattern_sample_cap": 50000,
+  "reservoir_sample_size": 20000,
+  "reservoir_merge_multiplier": 4,
+  "hasher_depth": 4,
+  "hasher_buckets_multiplier": 4,
+  "ngram_range": [2, 4],
+  "analytic_target_dim": 512
+}

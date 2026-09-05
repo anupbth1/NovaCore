@@ -1,0 +1,8 @@
+{
+  "_about": "Per-dataset override for rajpurkar/squad. Only override fields you need; everything else falls back to data_config.json.",
+  "datasets": {
+    "rajpurkar/squad": {
+      "split": "train", "max_rows": 50000, "mode": "download", "random": false, "add_datasets": false, "absorb": false
+    }
+  }
+}

@@ -1,0 +1,95 @@
+{
+  "hf": {
+    "login_prompt": "token from https://huggingface.co/settings/tokens",
+    "auto_columns": ["text", "content", "document", "body", "story", "instruction", "instructions", "prompt", "task", "input", "context", "question", "query", "output", "answer", "answers", "response", "completion", "reasoning", "reason", "rationale", "explanation", "analysis", "thinking", "thought", "chain_of_thought", "cot", "solution", "solution_steps", "steps", "plan", "planning", "messages", "conversation", "dialogue", "role"],
+    "download_rows_per_file": 10000,
+    // "default_split": "train",
+    // "mode": "download",
+    // "max_rows": "full",
+    // "random": false,
+    // "add_datasets": true,
+    // "absorb": false,
+    "uid_key": null
+  },
+
+  // Default filter applied to ALL datasets unless overridden per-dataset
+  // Disabled (enabled: false) to prevent re-adding the same rows on each
+  // training run. UID-based dedup in pool build already prevents duplicates
+  // (see `done_shards` + UID set in manifest). When you want filtering, flip
+  // to true per-dataset only.
+  "default_filter": {
+    "enabled": false,
+    "cleaning": {
+      "remove_deleted": true,
+      "remove_empty_text": true,
+      "min_text_length": 10
+    },
+    "quality": {
+      "language": null,
+      "min_rank": null,
+      "max_rank": null,
+      "require_review_result": false,
+      "exclude_synthetic": false
+    },
+    "dedup": {
+      "exact_text_dedup": true,
+      "near_dedup": false,
+      "near_dedup_threshold": 0.9
+    },
+    "conversation": {
+      "reconstruct_threads": false,
+      "min_thread_length": 2,
+      "keep_only_roots": false
+    }
+  },
+
+  "datasets": {
+    "HuggingFaceH4/no_robots": {
+      "split": "train", "max_rows": "full", "mode": "download", "random": false, "add_datasets": true, "absorb": false,
+      "filter": { "enabled": false }
+    },
+    "OpenAssistant/oasst1": {
+      "split": "train", "max_rows": "full", "mode": "download", "random": false, "add_datasets": true, "absorb": false,
+      "filter": { "enabled": false }
+    },
+    "OpenAssistant/oasst2": {
+      "split": "train", "max_rows": "full", "mode": "download", "random": false, "add_datasets": true, "absorb": false,
+      "filter": { "enabled": false }
+    },
+    "rajpurkar/squad": {
+      "split": "train", "max_rows": "full", "mode": "download", "random": false, "add_datasets": true, "absorb": false,
+      "filter": { "enabled": false }
+    },
+    "rajpurkar/squad_v2": {
+      "split": "train", "max_rows": "full", "mode": "download", "random": false, "add_datasets": true, "absorb": false,
+      "filter": { "enabled": false }
+    },
+    "tatsu-lab/alpaca": {
+      "split": "train", "max_rows": "full", "mode": "download", "random": false, "add_datasets": true, "absorb": false,
+      "filter": { "enabled": false }
+    },
+    "roneneldan/TinyStories": {
+      "split": "train", "max_rows": "full", "mode": "download", "random": false, "add_datasets": true, "absorb": false,
+      "filter": { "enabled": false }
+    },
+    "openbmb/UltraData-SFT-2605": {
+      "subset": [
+        {
+          "name": "Math", "split": "no_think", "max_rows": "full", "mode": "download",
+          "random": false, "add_datasets": true, "absorb": false,
+          "filter": { "enabled": false }
+        },
+        {
+          "name": "Multi-lang-Knowledge", "split": "no_think", "max_rows": "full", "mode": "download",
+          "random": false, "add_datasets": true, "absorb": false,
+          "filter": { "enabled": false }
+        },
+        {
+          "name": "Knowledge", "split": "think", "max_rows": "full", "mode": "download",
+          "random": false, "add_datasets": true, "absorb": false,
+          "filter": { "enabled": false }
+        }
+      ]
+    }
+  }
+}

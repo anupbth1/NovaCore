@@ -1,0 +1,92 @@
+{
+  "hf": {
+    "login_prompt": "Get token from https://huggingface.co/settings/tokens",
+    "auto_columns": ["text", "content", "document", "body", "story", "instruction", "instructions", "prompt", "task", "input", "context", "question", "query", "output", "answer", "answers", "response", "completion", "reasoning", "reason", "rationale", "explanation", "analysis", "thinking", "thought", "chain_of_thought", "cot", "solution", "solution_steps", "steps", "plan", "planning", "messages", "conversation", "dialogue", "role"],
+    "download_rows_per_file": 50000,
+    "uid_key": null
+  },
+
+  "default_filter": {
+    "enabled": true,
+    "cleaning": {
+      "remove_deleted": true,
+      "remove_empty_text": true,
+      "min_text_length": 10
+    },
+    "quality": {
+      "language": ["en", "hi"]
+    },
+    "dedup": {
+      "exact_text_dedup": true,
+      "near_dedup": true,
+      "near_dedup_threshold": 0.85
+    },
+    "conversation": {
+      "reconstruct_threads": false,
+      "min_thread_length": 1,
+      "keep_only_roots": false
+    }
+  },
+
+  "datasets": {
+    "tatsu-lab/alpaca": {
+      "split": "train",
+      "max_rows": null,
+      "mode": "stream",
+      "random": false,
+      "add_datasets": false,
+      "absorb": false,
+      "filter": {
+        "enabled": true,
+        "cleaning": { "remove_deleted": true, "remove_empty_text": true, "min_text_length": 10 },
+        "dedup": { "exact_text_dedup": true, "near_dedup": true, "near_dedup_threshold": 0.85 }
+      }
+    },
+    "HuggingFaceH4/no_robots": {
+      "split": "train",
+      "max_rows": null,
+      "mode": "stream",
+      "random": false,
+      "add_datasets": false,
+      "absorb": false,
+      "filter": {
+        "enabled": true,
+        "cleaning": { "remove_deleted": true, "remove_empty_text": true, "min_text_length": 10 },
+        "dedup": { "exact_text_dedup": true, "near_dedup": true, "near_dedup_threshold": 0.85 }
+      }
+    },
+    "roneneldan/TinyStories": {
+      "split": "train",
+      "max_rows": null,
+      "mode": "stream",
+      "random": false,
+      "add_datasets": false,
+      "absorb": false,
+      "filter": {
+        "enabled": true,
+        "cleaning": { "remove_deleted": true, "remove_empty_text": true, "min_text_length": 20 },
+        "dedup": { "exact_text_dedup": true, "near_dedup": true, "near_dedup_threshold": 0.85 }
+      }
+    },
+    "OpenAssistant/oasst2": {
+      "split": "train",
+      "max_rows": null,
+      "mode": "stream",
+      "random": false,
+      "add_datasets": false,
+      "absorb": false,
+      "filter": {
+        "enabled": true,
+        "cleaning": { "remove_deleted": true, "remove_empty_text": true, "min_text_length": 10 },
+        "quality": {
+          "language": ["en", "hi"],
+          "max_rank": 5,
+          "require_review_result": false,
+          "exclude_synthetic": false
+        },
+        "dedup": { "exact_text_dedup": true, "near_dedup": true, "near_dedup_threshold": 0.85 },
+        "conversation": { "reconstruct_threads": false, "min_thread_length": 1 }
+      }
+    }
+  }
+}

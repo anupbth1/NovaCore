@@ -1,0 +1,151 @@
+{
+  "hf": {
+    "login_prompt": "token from https://huggingface.co/settings/tokens",
+    "auto_columns": ["text", "content", "document", "body", "story", "instruction", "instructions", "prompt", "task", "input", "context", "question", "query", "output", "answer", "answers", "response", "completion", "reasoning", "reason", "rationale", "explanation", "analysis", "thinking", "thought", "chain_of_thought", "cot", "solution", "solution_steps", "steps", "plan", "planning", "messages", "conversation", "dialogue", "role"],
+    "download_rows_per_file": 10000,
+    // "default_split": "train",
+    // "mode": "download",
+    // "max_rows": "full",
+    // "random": false,
+    // "add_datasets": true,
+    // "absorb": false,
+    "uid_key": null
+  },
+
+  // Default filter applied to ALL datasets unless overridden per-dataset
+  // NOTE: enabled: true uses _CompactHashSet (4 bytes/row) instead of Python set (100+ bytes/row)
+  // so MemoryError is avoided even on 5M+ docs. Quality filtering improves model output.
+  "default_filter": {
+    "enabled": true,
+    "cleaning": {
+      "remove_deleted": true,
+      "remove_empty_text": true,
+      "min_text_length": 10
+    },
+    "quality": {
+      "language": null,
+      "min_rank": null,
+      "max_rank": null,
+      "require_review_result": true,
+      "exclude_synthetic": true
+    },
+    "dedup": {
+      "exact_text_dedup": true,
+      "near_dedup": true,
+      "near_dedup_threshold": 0.9
+    },
+    "conversation": {
+      "reconstruct_threads": true,
+      "min_thread_length": 2,
+      "keep_only_roots": true
+    }
+  },
+
+  "datasets": {
+    "HuggingFaceH4/no_robots": {
+      "split": "train", "max_rows": "full", "mode": "download", "random": false, "add_datasets": false, "absorb": false,
+      "filter": {
+        "enabled": true,
+        "cleaning": { "remove_deleted": true, "remove_empty_text": true, "min_text_length": 10 },
+        "quality": { "language": ["en"] },
+        "dedup": { "exact_text_dedup": true }
+      }
+    },
+    "OpenAssistant/oasst1": {
+      "split": "train", "max_rows": "full", "mode": "download", "random": false, "add_datasets": false, "absorb": false,
+      "filter": {
+        "enabled": true,
+        "cleaning": { "remove_deleted": true, "remove_empty_text": true, "min_text_length": 10 },
+        "quality": {
+          "language": ["en", "es", "de", "fr", "pt", "it", "nl", "ru", "zh", "ja", "ko", "ar", "hi", "tr", "pl", "vi", "id", "cs", "uk", "el", "sv", "fi", "da", "no", "he", "ro", "hu", "th", "bn"],
+          "max_rank": 3,
+          "require_review_result": false,
+          "exclude_synthetic": false
+        },
+        "dedup": { "exact_text_dedup": true },
+        "conversation": { "reconstruct_threads": false, "min_thread_length": 1 }
+      }
+    },
+    "OpenAssistant/oasst2": {
+      "split": "train", "max_rows": "full", "mode": "download", "random": false, "add_datasets": false, "absorb": false,
+      "filter": {
+        "enabled": true,
+        "cleaning": { "remove_deleted": true, "remove_empty_text": true, "min_text_length": 10 },
+        "quality": {
+          "language": ["en", "es", "de", "fr", "pt", "it", "nl", "ru", "zh", "ja", "ko", "ar", "hi", "tr", "pl", "vi", "id", "cs", "uk", "el", "sv", "fi", "da", "no", "he", "ro", "hu", "th", "bn"],
+          "max_rank": 3,
+          "require_review_result": false,
+          "exclude_synthetic": false
+        },
+        "dedup": { "exact_text_dedup": true },
+        "conversation": { "reconstruct_threads": false, "min_thread_length": 1 }
+      }
+    },
+    "rajpurkar/squad": {
+      "split": "train", "max_rows": "full", "mode": "download", "random": false, "add_datasets": false, "absorb": false,
+      "filter": {
+        "enabled": true,
+        "cleaning": { "remove_deleted": true, "remove_empty_text": true, "min_text_length": 10 },
+        "dedup": { "exact_text_dedup": true }
+      }
+    },
+    "rajpurkar/squad_v2": {
+      "split": "train", "max_rows": "full", "mode": "download", "random": false, "add_datasets": false, "absorb": false,
+      "filter": {
+        "enabled": true,
+        "cleaning": { "remove_deleted": true, "remove_empty_text": true, "min_text_length": 10 },
+        "dedup": { "exact_text_dedup": true }
+      }
+    },
+    "tatsu-lab/alpaca": {
+      "split": "train", "max_rows": "full", "mode": "download", "random": false, "add_datasets": false, "absorb": false,
+      "filter": {
+        "enabled": true,
+        "cleaning": { "remove_deleted": true, "remove_empty_text": true, "min_text_length": 10 },
+        "dedup": { "exact_text_dedup": true }
+      }
+    },
+    "roneneldan/TinyStories": {
+      "split": "train", "max_rows": "full", "mode": "download", "random": false, "add_datasets": false, "absorb": false,
+      "filter": {
+        "enabled": true,
+        "cleaning": { "remove_deleted": true, "remove_empty_text": true, "min_text_length": 20 },
+        "dedup": { "exact_text_dedup": true }
+      }
+    },
+    "openbmb/UltraData-SFT-2605": {
+      "subset": [
+        {
+          "name": "Math", "split": "no_think", "max_rows": "full", "mode": "download",
+          "random": false, "add_datasets": false, "absorb": false,
+          "filter": {
+            "enabled": true,
+            "cleaning": { "remove_deleted": true, "remove_empty_text": true, "min_text_length": 10 },
+            "quality": { "language": null, "min_rank": null, "max_rank": null },
+            "dedup": { "exact_text_dedup": true }
+          }
+        },
+        {
+          "name": "Multi-lang-Knowledge", "split": "no_think", "max_rows": "full", "mode": "download",
+          "random": false, "add_datasets": false, "absorb": false,
+          "filter": {
+            "enabled": true,
+            "cleaning": { "remove_deleted": false, "remove_empty_text": true, "min_text_length": 10 },
+            "quality": { "language": null, "min_rank": null, "max_rank": null },
+            "dedup": { "exact_text_dedup": true }
+          }
+        },
+        {
+          "name": "Knowledge", "split": "think", "max_rows": "full", "mode": "download",
+          "random": false, "add_datasets": false, "absorb": false,
+          "filter": {
+            "enabled": true,
+            "cleaning": { "remove_deleted": false, "remove_empty_text": true, "min_text_length": 10 },
+            "quality": { "language": null, "min_rank": null, "max_rank": null },
+            "dedup": { "exact_text_dedup": true }
+          }
+        }
+      ]
+    }
+  }
+}
