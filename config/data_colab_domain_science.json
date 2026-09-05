@@ -31,7 +31,7 @@
   "datasets": {
     "squad_v2": {
       "split": "train",
-      "max_rows": null,
+      "max_rows": 130000,
       "mode": "stream",
       "random": false,
       "add_datasets": true,

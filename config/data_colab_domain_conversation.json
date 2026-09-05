@@ -31,7 +31,7 @@
   "datasets": {
     "dmlconvai/ConvAI2": {
       "split": "train",
-      "max_rows": null,
+      "max_rows": 15000,
       "mode": "stream",
       "random": false,
       "add_datasets": true,
@@ -44,7 +44,7 @@
     },
     "squad_v2": {
       "split": "train",
-      "max_rows": null,
+      "max_rows": 130000,
       "mode": "stream",
       "random": false,
       "add_datasets": true,

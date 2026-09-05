@@ -18,6 +18,7 @@
     "pattern_sample_cap": 500000,
     "analytic_target_dim": 2048,
     "ngram_range": [1, 3],
+    "token_min_freq": 2,
     "ram_safe_overrides": {
       "max_tokens": 4096,
       "vocab_size": 50000,

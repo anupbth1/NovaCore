@@ -19,7 +19,7 @@ class Vocabulary:
     def __init__(self, vocab_size=None, min_freq=None):
         from ..config import get_default
         self.vocab_size = vocab_size if vocab_size is not None else get_default('vocab_size')
-        self.min_freq = min_freq if min_freq is not None else get_default('token_min_freq')
+        self.min_freq = min_freq if min_freq is not None else get_default('token_min_freq') or 1
         self.token_to_id = {
             "<pad>": 0,
             "<unk>": 1,
