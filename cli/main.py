@@ -617,12 +617,26 @@ def cmd_train(args):
                     pool_streams.append((_ppath, _pcount, ds_name, _filter_cfg))
                     total_stream_docs += _pcount
                 elif texts and hasattr(texts, '__iter__') and not _ppath:
-                    # Fallback: streaming iterable (not pooled) – materialise
-                    if not isinstance(texts, list):
-                        texts = list(texts)
-                    if texts:
-                        local_all_texts.extend(texts)
-                        total_stream_docs += len(texts)
+                    # Fallback: streaming iterable (not pooled) — write to disk pool
+                    # to avoid RAM blow-up on large datasets (e.g. TinyStories 3.3M rows).
+                    import tempfile, json as _json
+                    _pool_dir = os.path.join("data", "hf_cache", "pool")
+                    os.makedirs(_pool_dir, exist_ok=True)
+                    _safe_name = ds_name.replace("/", "_").replace("\\", "_")
+                    _stream_pool = os.path.join(_pool_dir, f"{_safe_name}_stream.jsonl")
+                    _stream_count = 0
+                    with open(_stream_pool, "w", encoding="utf-8") as _sf:
+                        for _row in texts:
+                            if _row:
+                                _sf.write(_json.dumps({"text": _row}, ensure_ascii=False) + "\n")
+                                _stream_count += 1
+                                if _stream_count % 50000 == 0:
+                                    print(f"    · wrote {_stream_count} rows to disk pool...", flush=True)
+                    print(f"    · {_safe_name}: {_stream_count} rows -> disk pool ({_stream_pool})")
+                    if _stream_count:
+                        pool_streams.append((_stream_pool, _stream_count, ds_name, None))
+                        total_stream_docs += _stream_count
+                    del texts
             else:
                 # local file
                 print(f"[NovaCore] Loading local dataset: {ds_spec} (max-rows={per_rows or 'full'})")

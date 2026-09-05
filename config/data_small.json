@@ -31,7 +31,7 @@
   "datasets": {
     "tatsu-lab/alpaca": {
       "split": "train",
-      "max_rows": 50000,
+      "max_rows": null,
       "mode": "stream",
       "random": false,
       "add_datasets": false,
@@ -44,7 +44,7 @@
     },
     "HuggingFaceH4/no_robots": {
       "split": "train",
-      "max_rows": 50000,
+      "max_rows": null,
       "mode": "stream",
       "random": false,
       "add_datasets": false,
@@ -57,7 +57,7 @@
     },
     "roneneldan/TinyStories": {
       "split": "train",
-      "max_rows": 50000,
+      "max_rows": null,
       "mode": "stream",
       "random": false,
       "add_datasets": false,
@@ -70,7 +70,7 @@
     },
     "OpenAssistant/oasst2": {
       "split": "train",
-      "max_rows": 50000,
+      "max_rows": null,
       "mode": "stream",
       "random": false,
       "add_datasets": false,

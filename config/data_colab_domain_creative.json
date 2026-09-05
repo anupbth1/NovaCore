@@ -31,7 +31,7 @@
   "datasets": {
     "roneneldan/TinyStories": {
       "split": "train",
-      "max_rows": 200000,
+      "max_rows": null,
       "mode": "stream",
       "random": false,
       "add_datasets": true,
@@ -44,7 +44,7 @@
     },
     "HuggingFaceH4/no_robots": {
       "split": "train",
-      "max_rows": 9500,
+      "max_rows": null,
       "mode": "stream",
       "random": false,
       "add_datasets": true,

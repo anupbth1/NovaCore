@@ -8,85 +8,44 @@
 
   "default_filter": {
     "enabled": true,
-    "cleaning": {
-      "remove_deleted": true,
-      "remove_empty_text": true,
-      "min_text_length": 10
-    },
-    "quality": {
-      "language": ["en", "hi"]
-    },
-    "dedup": {
-      "exact_text_dedup": true,
-      "near_dedup": true,
-      "near_dedup_threshold": 0.85
-    },
-    "conversation": {
-      "reconstruct_threads": false,
-      "min_thread_length": 1,
-      "keep_only_roots": false
-    }
+    "cleaning": { "remove_deleted": true, "remove_empty_text": true, "min_text_length": 10 },
+    "quality": { "language": ["en", "hi"] },
+    "dedup": { "exact_text_dedup": true, "near_dedup": true, "near_dedup_threshold": 0.85 },
+    "conversation": { "reconstruct_threads": false, "min_thread_length": 1, "keep_only_roots": false }
   },
 
   "datasets": {
     "tatsu-lab/alpaca": {
       "split": "train",
-      "max_rows": 52000,
+      "max_rows": null,
       "mode": "stream",
       "random": false,
       "add_datasets": false,
-      "absorb": false,
-      "filter": {
-        "enabled": true,
-        "cleaning": { "remove_deleted": true, "remove_empty_text": true, "min_text_length": 10 },
-        "dedup": { "exact_text_dedup": true, "near_dedup": true, "near_dedup_threshold": 0.85 }
-      }
+      "absorb": false
     },
     "HuggingFaceH4/no_robots": {
       "split": "train",
-      "max_rows": 9500,
+      "max_rows": null,
       "mode": "stream",
       "random": false,
       "add_datasets": false,
-      "absorb": false,
-      "filter": {
-        "enabled": true,
-        "cleaning": { "remove_deleted": true, "remove_empty_text": true, "min_text_length": 10 },
-        "dedup": { "exact_text_dedup": true, "near_dedup": true, "near_dedup_threshold": 0.85 }
-      }
+      "absorb": false
     },
     "roneneldan/TinyStories": {
       "split": "train",
-      "max_rows": 200000,
+      "max_rows": null,
       "mode": "stream",
       "random": false,
       "add_datasets": false,
-      "absorb": false,
-      "filter": {
-        "enabled": true,
-        "cleaning": { "remove_deleted": true, "remove_empty_text": true, "min_text_length": 20 },
-        "dedup": { "exact_text_dedup": true, "near_dedup": true, "near_dedup_threshold": 0.85 }
-      }
+      "absorb": false
     },
     "OpenAssistant/oasst2": {
       "split": "train",
-      "max_rows": 88000,
+      "max_rows": null,
       "mode": "stream",
       "random": false,
       "add_datasets": false,
-      "absorb": false,
-      "filter": {
-        "enabled": true,
-        "cleaning": { "remove_deleted": true, "remove_empty_text": true, "min_text_length": 10 },
-        "quality": {
-          "language": ["en", "hi"],
-          "max_rank": 5,
-          "require_review_result": false,
-          "exclude_synthetic": false
-        },
-        "dedup": { "exact_text_dedup": true, "near_dedup": true, "near_dedup_threshold": 0.85 },
-        "conversation": { "reconstruct_threads": false, "min_thread_length": 1 }
-      }
+      "absorb": false
     }
   }
 }

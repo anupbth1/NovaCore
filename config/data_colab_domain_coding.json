@@ -31,7 +31,7 @@
   "datasets": {
     "tatsu-lab/alpaca": {
       "split": "train",
-      "max_rows": 52000,
+      "max_rows": null,
       "mode": "stream",
       "random": false,
       "add_datasets": true,

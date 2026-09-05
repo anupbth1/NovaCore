@@ -31,7 +31,7 @@
   "datasets": {
     "OpenAssistant/oasst2": {
       "split": "train",
-      "max_rows": 88000,
+      "max_rows": null,
       "mode": "stream",
       "random": false,
       "add_datasets": true,
