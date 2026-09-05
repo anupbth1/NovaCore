@@ -17,8 +17,8 @@ class PatternExtractor:
     def __init__(self, ngram_range=None, min_freq=None, max_size=None):
         from ..config import get_default
         self.ngram_range = tuple(ngram_range or get_default('ngram_range'))
-        self.min_freq = min_freq if min_freq is not None else get_default('pattern_min_freq') or 2
-        self.max_size = max_size if max_size is not None else get_default('pattern_max_size') or 200000
+        self.min_freq = min_freq if min_freq is not None else get_default('pattern_min_freq')
+        self.max_size = max_size if max_size is not None else get_default('pattern_max_size')
         self.patterns = Counter()
         self.cooccurrence = {}
         self._reset()
@@ -57,7 +57,7 @@ class PatternExtractor:
         # Co-occurrence within window — sliding window (near-linear).
         # CAP at 500K entries to prevent MemoryError on large corpora.
         CO_CAP = 500_000
-        window = get_default('cooccurrence_window') or 5
+        window = get_default('cooccurrence_window')
         co = self.cooccurrence
         for i in range(lt):
             if len(co) >= CO_CAP:

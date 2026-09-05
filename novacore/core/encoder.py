@@ -13,10 +13,10 @@ class RandomFourierEncoder:
 
     def __init__(self, input_dim=None, dim=None, layers=None, seed=None):
         from ..config import get_default
-        self.dim = dim if dim is not None else get_default('dim') or 1024
-        self.layers = layers if layers is not None else get_default('layers') or 8
-        self.seed = seed if seed is not None else get_default('seed') or 42
-        self.input_dim = input_dim if input_dim is not None else get_default('encoder_input_dim') or 2048
+        self.dim = dim if dim is not None else get_default('dim')
+        self.layers = layers if layers is not None else get_default('layers')
+        self.seed = seed if seed is not None else get_default('seed')
+        self.input_dim = input_dim if input_dim is not None else get_default('encoder_input_dim')
         self._rng = np.random.RandomState(seed)
         self.W = None
         self.b = None
@@ -65,7 +65,7 @@ class RandomFourierEncoder:
         """
         Z = self.encode(X)
         from ..config import get_default
-        lam = get_default('ridge_lambda') or 0.01
+        lam = get_default('ridge_lambda')
         n, d = Z.shape
         # Use float32 for the heavy matmul (4x faster, plenty of precision)
         Zf = Z.astype(np.float32, copy=False)
