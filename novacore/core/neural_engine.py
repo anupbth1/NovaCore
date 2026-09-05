@@ -597,7 +597,19 @@ class NovaNeuralEngine:
         return response
 
     def _get_best_reservoir_match(self, query: str) -> str:
-        """Find best matching reservoir text for query."""
+        """Find best matching reservoir text for query.
+        Uses semantic index (cosine similarity) when available,
+        falls back to word overlap otherwise.
+        """
+        # Prefer semantic index (set by ChatSession)
+        si = getattr(self, '_semantic_index', None)
+        if si is not None and si._built:
+            vocab = getattr(self, '_vocab', None)
+            if vocab is not None:
+                results = si.search(query, vocab, top_k=3)
+                if results and results[0][0] > 0.1:
+                    return clean_artifacts(results[0][1])
+        # Fallback: word overlap
         query_words = set(query.lower().split())
         best_text = ""
         best_score = 0
@@ -625,23 +637,32 @@ class NovaNeuralEngine:
         return embedding
 
     def _generate_from_neural(self, query: str, neural_output: List[float]) -> str:
-        """Generate response using neural network output + dataset knowledge."""
+        """Generate response using semantic search on reservoir + dataset knowledge."""
+        # First try semantic index (much better than word overlap)
+        si = getattr(self, '_semantic_index', None)
+        if si is not None and si._built:
+            vocab = getattr(self, '_vocab', None)
+            if vocab is not None:
+                results = si.search(query, vocab, top_k=3)
+                if results and results[0][0] > 0.15:
+                    return clean_artifacts(results[0][1])
+
+        # Fallback: word overlap on reservoir
         query_words = set(query.lower().split())
         if self.reservoir:
             scored_reservoir = []
-            neural_bias = sum(neural_output[:min(len(neural_output), 10)])
             for text in self.reservoir[:500]:
                 if not text:
                     continue
                 text_words = set(text.lower().split())
                 overlap = len(query_words & text_words)
                 if overlap > 0:
-                    score = overlap * (1.0 + abs(neural_bias))
-                    scored_reservoir.append((text, score))
+                    scored_reservoir.append((text, overlap))
             if scored_reservoir:
                 scored_reservoir.sort(key=lambda x: x[1], reverse=True)
                 best_text = scored_reservoir[0][0]
                 return clean_artifacts(best_text)
+
         # Fallback: try patterns
         scored_patterns = []
         for gram, count in self.patterns.patterns.items():

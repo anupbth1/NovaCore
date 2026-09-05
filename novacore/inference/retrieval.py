@@ -72,7 +72,7 @@ class RetrievalGenerator:
             else:
                 # Use first 100 chars as fallback
                 embedding = self.processor.text_to_vector(text[:100], normalize=True)
-                self.sample_embeddings.append(embeding)
+                self.sample_embeddings.append(embedding)
     
     def _extract_instruction_response(self, text):
         """Extract instruction and response from tagged text."""

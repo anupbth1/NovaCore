@@ -99,12 +99,13 @@ class PatternPredictor(Predictor):
     All content comes from dataset patterns.
     """
 
-    def __init__(self, pattern_extractor, vocab, processor, reservoir_samples=None, weights_dir=None):
+    def __init__(self, pattern_extractor, vocab, processor, reservoir_samples=None, weights_dir=None, semantic_index=None):
         self.patterns = pattern_extractor
         self.vocab = vocab
         self.processor = processor
         self.reservoir_samples = reservoir_samples or []
         self.upgrader = None
+        self.semantic_index = semantic_index
 
         # Load training upgrades if available
         if weights_dir:
@@ -179,7 +180,15 @@ class PatternPredictor(Predictor):
         from ..config import get_default
         import random
 
-        # If upgrader with semantic search is available, try retrieval first
+        # Priority 1: Try built-in semantic index (IDF-weighted cosine similarity)
+        if self.semantic_index is not None and self.semantic_index._built:
+            results = self.semantic_index.search(prompt, self.vocab, top_k=3)
+            if results and results[0][0] > get_default('semantic_search_threshold', 0.25):
+                best_text = results[0][1]
+                if best_text and len(best_text) > 10:
+                    return best_text
+
+        # Priority 2: SVD-based semantic search (if upgrader available)
         if self.upgrader and self.upgrader.semantic_search_enabled and self.reservoir_samples:
             sem_results = self.upgrader.semantic_search(
                 prompt, self.reservoir_samples, top_k=3
@@ -189,7 +198,7 @@ class PatternPredictor(Predictor):
                 if len(best_text) > 10:
                     return best_text[:max_tokens * 4]
 
-        # Fallback: pattern-based generation
+        # Priority 3: n-gram pattern generation (last resort)
         result = ""
         current_tokens = self.vocab._tokenize(prompt)
 

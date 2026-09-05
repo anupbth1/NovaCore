@@ -35,6 +35,10 @@
     "reasoning_extract_cap": 50000,
     "creative_extract_cap": 50000,
     "reservoir_max_chars": 4096,
+    "pool_load_cap": 200000,
+    "semantic_search_threshold": 0.35,
+    "semantic_search_top_k": 5,
+    "semantic_index_build_limit": 200000,
     "ram_safe_overrides": {
       "max_tokens": 4096,
       "vocab_size": 50000,
