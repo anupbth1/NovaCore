@@ -524,6 +524,29 @@ class HFLoader:
         # Track pool info so cmd_train can stream directly from pool files.
         self.last_pool_path = None
         self.last_pool_count = 0
+
+        # --- STREAMING POOL CACHE: skip HF download if pool file exists ---
+        if streaming:
+            _safe_name = dataset_name.replace("/", "_").replace("\\", "_")
+            _stream_pool_dir = os.path.join(cache_dir, "pool")
+            _stream_pool_file = os.path.join(_stream_pool_dir, f"{_safe_name}_stream.jsonl")
+            if os.path.isfile(_stream_pool_file) and os.path.getsize(_stream_pool_file) > 0:
+                _scount = sum(1 for _ in open(_stream_pool_file, "r", encoding="utf-8"))
+                if _scount > 0:
+                    log.info(
+                        f"{label}: STREAM -> pool cache hit ({_scount} rows in {_stream_pool_file}), skipping HF download"
+                    )
+                    self.last_pool_path = _stream_pool_file
+                    self.last_pool_count = _scount
+                    self.last_schema = {
+                        "dataset": dataset_name,
+                        "column": text_column,
+                        "fields": use_fields or {},
+                        "source": "stream_pool_cache",
+                    }
+                    return TextStream(_stream_pool_file)
+        # --- END STREAMING POOL CACHE ---
+
         if not streaming:
             # Accumulated pool for (dataset, config, split). add_datasets=OFF +
             # an existing pool => pure reuse: return what is already downloaded
