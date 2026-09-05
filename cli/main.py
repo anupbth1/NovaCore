@@ -108,6 +108,7 @@ def build_parser():
     chat.add_argument("--tokens", "-t", type=int, default=_tokens, help="Max tokens per reply")
     chat.add_argument("--temperature", type=float, default=_temp, help="Sampling temp")
     chat.add_argument("--prompt", "-p", default=None, help="Single prompt mode (non-interactive, then exit)")
+    chat.add_argument("--verbose", "-v", action="store_true", help="Show detailed reasoning logs (gray)")
     chat.set_defaults(remaining=[])
 
     # train - unified model creation (HF + local + multi + mixed + new/load)
@@ -1096,7 +1097,7 @@ def cmd_chat(args):
             num_tokens = ((session.metadata or {}).get("max_tokens")
                           or _meta_tokens or get_default('max_tokens'))
         try:
-            return session.chat(prompt, max_tokens=num_tokens)
+            return session.chat(prompt, max_tokens=num_tokens, verbose=args.verbose)
         except Exception as e:
             return f"[Error: {e}]"
 
@@ -1104,7 +1105,7 @@ def cmd_chat(args):
     if args.prompt:
         reply = _run(args.prompt, args.tokens)
         print(f"You: {args.prompt}")
-        print(f"NovaCore: {reply}")
+        print(f"\033[92mNovaCore> {reply}\033[0m")
         return
 
     # Interactive REPL
@@ -1182,7 +1183,7 @@ def cmd_chat(args):
             continue
 
         reply = _run(nline, args.tokens)
-        print(f"\nNovaCore> {reply}")
+        print(f"\n\033[92mNovaCore> {reply}\033[0m")
 
 
 def cmd_hf(args):

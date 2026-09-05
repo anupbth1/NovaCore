@@ -483,7 +483,7 @@ class ChatSession:
             self.load()
         return dict(self.metadata or {})
 
-    def generate(self, prompt, max_tokens=None, temperature=None, use_history=True):
+    def generate(self, prompt, max_tokens=None, temperature=None, use_history=True, verbose=False):
         """
         Generate response. ALL from model, NO config file.
         Priority:
@@ -503,36 +503,95 @@ class ChatSession:
         if temperature is None:
             temperature = self.temperature
 
-        # Priority 1: Math
+        # ANSI color codes for logging
+        GRAY = '\033[90m'
+        RESET = '\033[0m'
+        GREEN = '\033[92m'
+        YELLOW = '\033[93m'
+        BLUE = '\033[94m'
+        CYAN = '\033[96m'
+        MAGENTA = '\033[95m'
+
+        def log(msg, color=GRAY):
+            if verbose:
+                print(f"{color}{msg}{RESET}")
+
+        def log_step(step, detail="", color=GRAY):
+            if verbose:
+                print(f"{color}  ▶ {step}{RESET} {GRAY}{detail}{RESET}")
+
+        log(f"{'='*60}")
+        log(f"INPUT: {prompt}")
+        log(f"PARAMS: max_tokens={max_tokens}, temperature={temperature}, history={use_history}")
+        log(f"{'='*60}")
+
+        # Priority 1: Math detection
+        log_step("PRIORITY 1: Math Detection", "Checking for mathematical expressions...")
         if self.model:
             math_result = self.model.neural_engine.python_terminal.parse_and_compute(prompt)
             if math_result is not None:
+                log(f"  ✓ MATH DETECTED: '{prompt}' → computed result", GREEN)
+                log(f"  RESULT: {math_result}", GREEN)
+                log(f"{'='*60}")
                 return math_result
+            else:
+                log("  ✗ No math expression found", YELLOW)
 
-        # Priority 2: Semantic retrieval — THE PRIMARY PATH
+        # Priority 2: Semantic retrieval
+        log_step("PRIORITY 2: Semantic Retrieval", f"Searching reservoir (threshold={SEMANTIC_SEARCH_THRESHOLD}, top_k={SEMANTIC_SEARCH_TOP_K})")
         if self.semantic_index and self.semantic_index._built:
             vocab = self._get_vocab()
+            log(f"  Building query vector...", CYAN)
+            qvec = self.semantic_index._encode_query(prompt, vocab)
+            if qvec is not None:
+                log(f"  Query vector: dim={len(qvec)}, norm={float(np.linalg.norm(qvec)):.4f}", CYAN)
             results = self.semantic_index.search(prompt, vocab, top_k=SEMANTIC_SEARCH_TOP_K)
+            log(f"  Found {len(results)} candidates", BLUE)
+            for i, (score, ans) in enumerate(results):
+                preview = ans[:80].replace('\n', ' ')
+                log(f"    [{i+1}] score={score:.4f} | {preview}...", MAGENTA)
             if results:
                 best_score, best_answer = results[0]
                 if (best_score >= SEMANTIC_SEARCH_THRESHOLD and best_answer
                         and len(best_answer) > 10
                         and self._is_relevant_answer(prompt, best_answer)):
+                    log(f"  ✓ BEST MATCH (score={best_score:.4f}) — returning", GREEN)
+                    log(f"  ANSWER: {best_answer[:200]}...", GREEN)
+                    log(f"{'='*60}")
                     return best_answer
+                log(f"  ✗ Best score {best_score:.4f} below threshold {SEMANTIC_SEARCH_THRESHOLD} or irrelevant", YELLOW)
                 if len(results) > 1:
+                    log("  Trying relaxed threshold...", CYAN)
                     for score, answer in results[1:]:
                         if (score >= SEMANTIC_SEARCH_THRESHOLD * SEMANTIC_SEARCH_RELAXED
                                 and answer and len(answer) > 10
                                 and self._is_relevant_answer(prompt, answer)):
+                            log(f"  ✓ RELAXED MATCH (score={score:.4f}) — returning", GREEN)
+                            log(f"  ANSWER: {answer[:200]}...", GREEN)
+                            log(f"{'='*60}")
                             return answer
+                    log("  ✗ No relaxed matches pass relevance check", YELLOW)
+            else:
+                log("  ✗ No semantic matches found", YELLOW)
+        else:
+            log("  ✗ Semantic index not built", YELLOW)
 
         # Priority 2b: Word-overlap pool matching
+        log_step("PRIORITY 2b: Word-Overlap Pool Matching", f"pool_pairs={len(self.pool_pairs)}")
         if self.pool_pairs:
             matched = self._match_pool(prompt)
             if matched and len(matched) > 10:
+                log(f"  ✓ POOL MATCH FOUND", GREEN)
+                log(f"  ANSWER: {matched[:200]}...", GREEN)
+                log(f"{'='*60}")
                 return matched
+            else:
+                log("  ✗ No pool match above threshold", YELLOW)
+        else:
+            log("  ✗ No pool pairs available", YELLOW)
 
         # Priority 2.5: Knowledge base
+        log_step("PRIORITY 2.5: Knowledge Base", f"knowledge_index={'loaded' if self.knowledge_index else 'none'}")
         if self.knowledge_index:
             results = self.knowledge_index.search(prompt, top_k=KNOWLEDGE_SEARCH_TOP_K)
             if results:
@@ -540,33 +599,73 @@ class ChatSession:
                 answer = (best.get('definition') or best.get('answer')
                           or best.get('object') or '')
                 if answer and len(answer) > 10:
+                    log(f"  ✓ KNOWLEDGE MATCH: {answer[:150]}...", GREEN)
+                    log(f"{'='*60}")
                     return answer
+                log("  ✗ Knowledge result too short", YELLOW)
+            else:
+                log("  ✗ No knowledge matches", YELLOW)
 
         # Priority 3: Deep reasoning
+        log_step("PRIORITY 3: Deep Reasoning", f"reasoner={'loaded' if self.reasoner else 'none'}")
         if self.reasoner:
+            log("  Running reasoning engine...", CYAN)
             reasoned = self.reasoner.reason(prompt, knowledge_index=self.knowledge_index)
             if reasoned and len(reasoned) > 10:
+                log(f"  ✓ REASONED OUTPUT: {reasoned[:150]}...", GREEN)
+                log(f"{'='*60}")
                 return reasoned
+            log("  ✗ Reasoning output too short/empty", YELLOW)
 
         # Priority 3.5: Creative generation
+        log_step("PRIORITY 3.5: Creative Generation", f"creative_engine={'loaded' if self.creative else 'none'}")
         if self.creative:
+            log("  Running creative engine...", CYAN)
             creative = self.creative.generate(prompt, reservoir=self.reservoir_samples)
             if creative and len(creative) > 20:
+                log(f"  ✓ CREATIVE OUTPUT: {creative[:150]}...", GREEN)
+                log(f"{'='*60}")
                 return creative
+            log("  ✗ Creative output too short/empty", YELLOW)
 
         # Priority 4: Neural engine
+        log_step("PRIORITY 4: Neural Engine", "Running NovaNeuralEngine.process()")
         if self.model:
+            log("  Calling neural_engine.process()...", CYAN)
+            log("    → Embedding query", CYAN)
+            log("    → Neural forward pass", CYAN)
+            log("    → Neural routing to reservoir", CYAN)
+            log("    → Virtual simulation (quality check)", CYAN)
+            log("    → Verification engine (retry if needed)", CYAN)
             response = self.model.generate(prompt, max_tokens)
             if response and len(response) > 10:
+                log(f"  ✓ NEURAL ENGINE OUTPUT: {response[:150]}...", GREEN)
+                log(f"{'='*60}")
                 return response
+            log("  ✗ Neural engine output too short/empty", YELLOW)
 
         # Priority 5: Predictor fallback
+        log_step("PRIORITY 5: Predictor Fallback", "Running PatternPredictor.reply()")
         if self.predictor:
+            log("  Building context from history...", CYAN)
             context = self._build_context(prompt, use_history)
+            log(f"  Context: {context[:100]}...", CYAN)
+            log("  Calling PatternPredictor.generate() with semantic_index...", CYAN)
+            log("    → Semantic index search (fallback)", CYAN)
+            log("    → SVD semantic search (if upgrader)", CYAN)
+            log("    → n-gram pattern generation", CYAN)
+            log("    → Virtual simulation (verify_and_correct)", CYAN)
+            log("      → VirtualVerifier.score_text()", CYAN)
+            log("      → VirtualSelfCorrector.correct_text()", CYAN)
             response = self.predictor.reply(context, max_tokens, temperature)
             if response:
+                log(f"  ✓ PREDICTOR OUTPUT: {response[:150]}...", GREEN)
+                log(f"{'='*60}")
                 return response
+            log("  ✗ Predictor returned empty", YELLOW)
 
+        log("  ✗ ALL PRIORITIES EXHAUSTED — returning default", YELLOW)
+        log(f"{'='*60}")
         return "I'm not sure how to respond to that."
 
     def _get_vocab(self):
@@ -586,9 +685,9 @@ class ChatSession:
             return self.model.visualize_network()
         return "Model not loaded"
 
-    def chat(self, prompt, max_tokens=None, temperature=None):
+    def chat(self, prompt, max_tokens=None, temperature=None, verbose=False):
         self.history.append({"role": "user", "content": prompt})
-        reply = self.generate(prompt, max_tokens, temperature)
+        reply = self.generate(prompt, max_tokens, temperature, use_history=True, verbose=verbose)
         self.history.append({"role": "assistant", "content": reply})
         if len(self.history) > self.max_history * 2:
             self.history = self.history[-self.max_history * 2:]
