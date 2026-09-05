@@ -17,15 +17,51 @@ from typing import Dict, List, Optional
 class CreativePatternExtractor:
     """Extracts creative writing patterns from training data."""
 
+    # Pre-compiled regex — compiled ONCE at class load time
+    _OPEN_PATS = [re.compile(p, re.MULTILINE) for p in [
+        r'^([Oo]nce\s+(?:upon\s+)?(?:a\s+time|there\s+was)[^.]*\.)',
+        r'^([Tt]here\s+(?:was|lived|once)[^.]*\.)',
+        r'^([Ll]ong\s+(?:ago|before)[^.]*\.)',
+        r'^([Ii]n\s+(?:a|the)\s+\w+\s+(?:land|world|kingdom|village|city)[^.]*\.)',
+        r'^([Tt]he\s+\w+\s+(?:sun|moon|stars|wind|rain)[^.]*\.)',
+    ]]
+    _END_PATS = [re.compile(p, re.IGNORECASE) for p in [
+        r'([^.]*and\s+(?:they\s+)?(?:lived\s+happily|were\s+happy|found\s+(?:peace|happiness|love|joy))[^.]*\.)',
+        r'([^.]*the\s+end[^.]*\.)',
+        r'([^.]*forever\s+(?:after|and\s+ever)[^.]*\.)',
+        r'([^.]*never\s+(?:forgot|forgot\s+that)[^.]*\.)',
+        r'([^.]*all\s+(?:was\s+well|turned\s+out\s+(?:well|fine|okay))[^.]*\.)',
+    ]]
+    _MID_PATS = [re.compile(p, re.IGNORECASE) for p in [
+        r'([^.]*(?:but|however|suddenly|then|however)[^.]*\.)',
+        r'([^.]*(?:decided|chose|wanted|needed|tried|attempted)[^.]*\.)',
+        r'([^.]*(?:discovered|found|learned|realized|understood)[^.]*\.)',
+    ]]
+    _POETRY_RHYME = re.compile(r'.*(?:tion|sion|ment|ness|ful|less|ing|ed|ly|er|est|ize|ise)$', re.IGNORECASE)
+    _POETRY_SIMILE = re.compile(r'.*\s+(?:is|are|was|were)\s+(?:a|an|the)\s+.*', re.IGNORECASE)
+    _METAPHOR_PATS = [re.compile(p, re.IGNORECASE) for p in [
+        r'(\w+(?:\s+\w+){0,5})\s+(?:is|are|was|were)\s+(?:a|an)\s+([^.]+)',
+        r'(\w+(?:\s+\w+){0,5})\s+(?:is|are|like|resembles)\s+like\s+([^.]+)',
+        r'(?:imagine|picture|think\s+of)\s+(\w+(?:\s+\w+){0,5})\s+as\s+([^.]+)',
+    ]]
+    _DESC_PATS = [re.compile(p, re.IGNORECASE) for p in [
+        r'((?:the\s+)?\w+\s+(?:was|were|is|are)\s+(?:very\s+)?\w+ly\s+\w+[^.]*\.)',
+        r'((?:bright|dark|soft|hard|warm|cold|loud|quiet|gentle|fierce|beautiful|ugly|ancient|modern)\s+\w+[^.]*\.)',
+    ]]
+    _DIALOGUE_PATS = [re.compile(p) for p in [
+        r'"([^"]{5,100})"',
+        r'\u201c([^\u201d]{5,100})\u201d',
+    ]]
+
     def __init__(self):
-        self.story_openings = []     # "Once upon...", "There was..."
-        self.story_middles = []      # plot developments
-        self.story_endings = []      # resolutions
-        self.poem_structures = []    # rhyme schemes, meter patterns
-        self.metaphors = []          # X is Y (creative)
-        self.descriptions = []       # vivid descriptions
-        self.dialogue_patterns = []  # conversation flows
-        self.emotional_arcs = []     # emotion progressions
+        self.story_openings = []
+        self.story_middles = []
+        self.story_endings = []
+        self.poem_structures = []
+        self.metaphors = []
+        self.descriptions = []
+        self.dialogue_patterns = []
+        self.emotional_arcs = []
 
     def extract_from_text(self, text: str):
         """Extract creative patterns from a text."""
@@ -37,38 +73,16 @@ class CreativePatternExtractor:
 
     def _extract_story_structure(self, text: str):
         """Extract story openings, middles, endings."""
-        # Openings
-        open_pat = [
-            r'^([Oo]nce\s+(?:upon\s+)?(?:a\s+time|there\s+was)[^.]*\.)',
-            r'^([Tt]here\s+(?:was|lived|once)[^.]*\.)',
-            r'^([Ll]ong\s+(?:ago|before)[^.]*\.)',
-            r'^([Ii]n\s+(?:a|the)\s+\w+\s+(?:land|world|kingdom|village|city)[^.]*\.)',
-            r'^([Tt]he\s+\w+\s+(?:sun|moon|stars|wind|rain)[^.]*\.)',
-        ]
-        for pat in open_pat:
-            for m in re.finditer(pat, text, re.MULTILINE):
+        for pat in self._OPEN_PATS:
+            for m in pat.finditer(text):
                 self.story_openings.append(m.group(1).strip())
 
-        # Endings
-        end_pat = [
-            r'([^.]*and\s+(?:they\s+)?(?:lived\s+happily|were\s+happy|found\s+(?:peace|happiness|love|joy))[^.]*\.)',
-            r'([^.]*the\s+end[^.]*\.)',
-            r'([^.]*forever\s+(?:after|and\s+ever)[^.]*\.)',
-            r'([^.]*never\s+(?:forgot|forgot\s+that)[^.]*\.)',
-            r'([^.]*all\s+(?:was\s+well|turned\s+out\s+(?:well|fine|okay))[^.]*\.)',
-        ]
-        for pat in end_pat:
-            for m in re.finditer(pat, text, re.IGNORECASE):
+        for pat in self._END_PATS:
+            for m in pat.finditer(text):
                 self.story_endings.append(m.group(1).strip())
 
-        # Middles (plot developments)
-        mid_pat = [
-            r'([^.]*(?:but|however|suddenly|then|however)[^.]*\.)',
-            r'([^.]*(?:decided|chose|wanted|needed|tried|attempted)[^.]*\.)',
-            r'([^.]*(?:discovered|found|learned|realized|understood)[^.]*\.)',
-        ]
-        for pat in mid_pat:
-            for m in re.finditer(pat, text, re.IGNORECASE):
+        for pat in self._MID_PATS:
+            for m in pat.finditer(text):
                 s = m.group(1).strip()
                 if len(s) > 20:
                     self.story_middles.append(s)
@@ -76,45 +90,34 @@ class CreativePatternExtractor:
     def _extract_poetry(self, text: str):
         """Extract poetry patterns and structures."""
         lines = text.split('\n')
-        for i, line in enumerate(lines):
+        for line in lines:
             line = line.strip()
             if not line:
                 continue
-
-            # Check if line looks like poetry (short, rhythmic)
             words = line.split()
             if 3 <= len(words) <= 10:
-                # Check for rhyme-like endings
-                if re.match(r'.*(?:tion|sion|ment|ness|ful|less|ing|ed|ly|er|est|ize|ise)$', line, re.IGNORECASE):
+                if self._POETRY_RHYME.match(line):
                     self.poem_structures.append({
                         'line': line,
                         'position': 'end_rhyme',
                         'word_count': len(words)
                     })
-
-            # Metaphor detection
-            if re.match(r'.*\s+(?:is|are|was|were)\s+(?:a|an|the)\s+.*', line, re.IGNORECASE):
-                if any(w in line.lower() for w in ['like', 'as', 'just as']):
-                    self.poem_structures.append({
-                        'line': line,
-                        'position': 'simile',
-                        'word_count': len(words)
-                    })
+                elif self._POETRY_SIMILE.match(line):
+                    if any(w in line.lower() for w in ['like', 'as', 'just as']):
+                        self.poem_structures.append({
+                            'line': line,
+                            'position': 'simile',
+                            'word_count': len(words)
+                        })
 
     def _extract_metaphors(self, text: str):
         """Extract metaphors and creative comparisons."""
-        patterns = [
-            r'(\w+(?:\s+\w+){0,5})\s+(?:is|are|was|were)\s+(?:a|an)\s+([^.]+)',
-            r'(\w+(?:\s+\w+){0,5})\s+(?:is|are|like|resembles)\s+like\s+([^.]+)',
-            r'(?:imagine|picture|think\s+of)\s+(\w+(?:\s+\w+){0,5})\s+as\s+([^.]+)',
-        ]
-        for pat in patterns:
-            for m in re.finditer(pat, text, re.IGNORECASE):
+        for pat in self._METAPHOR_PATS:
+            for m in pat.finditer(text):
                 if len(m.groups()) >= 2:
                     source = m.group(1).strip()
                     target = m.group(2).strip()
                     if len(source) > 2 and len(target) > 5:
-                        # Filter non-creative (factual statements)
                         if not any(w in target.lower() for w in ['subset', 'type of', 'defined as']):
                             self.metaphors.append({
                                 'source': source,
@@ -124,24 +127,16 @@ class CreativePatternExtractor:
 
     def _extract_descriptions(self, text: str):
         """Extract vivid descriptions."""
-        patterns = [
-            r'((?:the\s+)?\w+\s+(?:was|were|is|are)\s+(?:very\s+)?\w+ly\s+\w+[^.]*\.)',
-            r'((?:bright|dark|soft|hard|warm|cold|loud|quiet|gentle|fierce|beautiful|ugly|ancient|modern)\s+\w+[^.]*\.)',
-        ]
-        for pat in patterns:
-            for m in re.finditer(pat, text, re.IGNORECASE):
+        for pat in self._DESC_PATS:
+            for m in pat.finditer(text):
                 desc = m.group(1).strip() if m.lastindex else m.group(0).strip()
-                if len(desc) > 15 and len(desc) < 200:
+                if 15 < len(desc) < 200:
                     self.descriptions.append(desc)
 
     def _extract_dialogue(self, text: str):
         """Extract dialogue patterns."""
-        patterns = [
-            r'"([^"]{5,100})"',
-            r'"([^"]{5,100})"',
-        ]
-        for pat in patterns:
-            for m in re.finditer(pat, text):
+        for pat in self._DIALOGUE_PATS:
+            for m in pat.finditer(text):
                 self.dialogue_patterns.append(m.group(1).strip())
 
     def stats(self):
@@ -199,13 +194,11 @@ class CreativeEngine:
         """Generate a novel story by composing patterns."""
         paragraphs = []
 
-        # Opening
         if self.patterns.story_openings:
             opening = random.choice(self.patterns.story_openings)
         else:
             opening = "Once upon a time, there was a curious spirit."
 
-        # Add topic context
         if topic:
             topic_lower = topic.lower()
             if 'about' in topic_lower:
@@ -214,12 +207,11 @@ class CreativeEngine:
 
         paragraphs.append(opening)
 
-        # Middle paragraphs (plot development)
         used_middles = set()
         middle_pool = [m for m in self.patterns.story_middles if len(m) > 20]
         random.shuffle(middle_pool)
         middle_idx = 0
-        
+
         for i in range(max_paragraphs - 1):
             while middle_idx < len(middle_pool) and middle_pool[middle_idx] in used_middles:
                 middle_idx += 1
@@ -234,7 +226,6 @@ class CreativeEngine:
                     desc = random.choice(desc_pool)
                     paragraphs.append(desc)
 
-        # Ending
         if self.patterns.story_endings:
             ending = random.choice(self.patterns.story_endings)
         else:
@@ -246,13 +237,11 @@ class CreativeEngine:
     def generate_poem(self, topic: str = '', lines: int = 8) -> str:
         """Generate a novel poem by composing patterns."""
         poem_lines = []
-        
-        # Build pools
+
         metaphor_pool = [m['full'] for m in self.patterns.metaphors if len(m['full']) > 10]
         desc_pool = [d for d in self.patterns.descriptions if len(d) > 15]
         struct_pool = [p['line'] for p in self.patterns.poem_structures if len(p['line']) > 10]
-        
-        # Topic filtering
+
         if topic:
             topic_words = set(topic.lower().split())
             metaphor_pool = [m for m in metaphor_pool if topic_words & set(m.lower().split())] or metaphor_pool
@@ -260,7 +249,7 @@ class CreativeEngine:
             struct_pool = [s for s in struct_pool if topic_words & set(s.lower().split())] or struct_pool
 
         all_pool = metaphor_pool + desc_pool + struct_pool
-        
+
         if not all_pool:
             all_pool = [
                 f"The {topic} whispers soft and low,",
@@ -269,14 +258,12 @@ class CreativeEngine:
                 "The world reveals its wonders true.",
             ]
 
-        # Generate unique lines
         used = set()
         while len(poem_lines) < lines and all_pool:
             random.shuffle(all_pool)
             for line in all_pool:
                 clean = line.strip().rstrip('.')
                 if clean and clean not in used:
-                    # Trim to poetic length
                     words = clean.split()
                     if len(words) > 10:
                         clean = ' '.join(words[:10])
@@ -294,23 +281,16 @@ class CreativeEngine:
         """Detect if query wants creative content and what type."""
         q = query.lower()
 
-        # Story intents
         if any(w in q for w in ['story', 'tale', 'narrative', 'once upon']):
             return 'story'
         if any(w in q for w in ['fairy tale', 'fable', 'legend']):
             return 'story'
-
-        # Poetry intents
         if any(w in q for w in ['poem', 'poetry', 'verse', 'haiku', 'rhyme', 'sonnet']):
             return 'poem'
         if any(w in q for w in ['limerick', 'ode', 'ballad', 'stanza']):
             return 'poem'
-
-        # Dialogue intents
         if any(w in q for w in ['dialogue', 'conversation', 'chat between']):
             return 'dialogue'
-
-        # Description intents
         if any(w in q for w in ['describe', 'depict', 'portray', 'paint a picture']):
             return 'description'
 
@@ -324,7 +304,6 @@ class CreativeEngine:
         intent = self.detect_creative_intent(query)
 
         if intent == 'story':
-            # Extract topic from query
             topic = re.sub(r'(write|tell|create|make|give)\s+(me\s+)?(a\s+)?(story|tale|narrative)\s*(about)?\s*', '', query, flags=re.IGNORECASE).strip()
             return self.generate_story(topic, max_paragraphs=3)
 

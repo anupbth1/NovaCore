@@ -15,6 +15,36 @@ from typing import Dict, List, Any, Optional, Tuple
 class ReasoningPatternExtractor:
     """Extracts reasoning patterns from training data at encoding time."""
 
+    # Pre-compiled regex patterns — compiled ONCE, reused on every text
+    _CAUSAL_PATS = [re.compile(p, re.IGNORECASE) for p in [
+        r'(\w+(?:\s+\w+){0,8})\s+(?:causes?|leads?\s+to|results?\s+in|triggers?)\s+(\w+(?:\s+\w+){0,8})',
+        r'[Bb]ecause\s+(\w+(?:\s+\w+){0,8}),\s*(\w+(?:\s+\w+){0,8})',
+        r'(\w+(?:\s+\w+){0,8})\s+(?:since|as|due\s+to)\s+(\w+(?:\s+\w+){0,8})',
+        r'[Ii]f\s+(\w+(?:\s+\w+){0,8}),?\s+then\s+(\w+(?:\s+\w+){0,8})',
+    ]]
+    _LOGICAL_PATS = [re.compile(p, re.IGNORECASE) for p in [
+        r'(\w+(?:\s+\w+){0,6})\s+(?:is|are)\s+(?:a\s+)?(?:type\s+of|kind\s+of|form\s+of|subset\s+of)\s+(\w+(?:\s+\w+){0,6})',
+        r'(\w+(?:\s+\w+){0,6})\s+(?:implies?|means?\s+that)\s+(\w+(?:\s+\w+){0,6})',
+        r'(\w+(?:\s+\w+){0,6})\s+(?:therefore|thus|hence|consequently)\s+(\w+(?:\s+\w+){0,6})',
+    ]]
+    _COMPARISON_PATS = [re.compile(p, re.IGNORECASE) for p in [
+        r'(\w+(?:\s+\w+){0,5})\s+(?:is\s+)?(?:better|worse|faster|slower|larger|smaller|more\s+\w+|less\s+\w+)\s+than\s+(\w+(?:\s+\w+){0,5})\s+(?:because|since|as|due\s+to)\s+(\w+(?:\s+\w+){0,10})',
+        r'(\w+(?:\s+\w+){0,5})\s+(?:vs|versus|compared\s+to)\s+(\w+(?:\s+\w+){0,5})[,.]?\s+(\w+(?:\s+\w+){0,10})',
+    ]]
+    _EXPLANATION_PATS = [re.compile(p, re.IGNORECASE) for p in [
+        r'(\w+(?:\s+\w+){0,5})\s+(?:works?\s+by|operates?\s+by|functions?\s+by)\s+(\w+(?:\s+\w+){0,15})',
+        r'(\w+(?:\s+\w+){0,5})\s+(?:is\s+)?(?:used\s+for|utilized\s+for|employed\s+for)\s+(\w+(?:\s+\w+){0,10})',
+        r'[Tt]he\s+(\w+(?:\s+\w+){0,5})\s+(?:is\s+)?(?:responsible\s+for|in\s+charge\s+of|controls?)\s+(\w+(?:\s+\w+){0,10})',
+    ]]
+    _PROBLEM_PATS = [re.compile(p, re.IGNORECASE) for p in [
+        r'[Tt]o\s+(?:solve|fix|address|resolve)\s+(\w+(?:\s+\w+){0,8}),?\s*(?:you\s+)?(?:should|can|need\s+to|must)\s+(\w+(?:\s+\w+){0,15})',
+        r'[Tt]he\s+solution\s+(?:is|to)\s+(\w+(?:\s+\w+){0,15})',
+        r'[Hh]ow\s+to\s+(\w+(?:\s+\w+){0,8})[?:.]?\s+(\w+(?:\s+\w+){0,15})',
+    ]]
+    _ANALOGY_PATS = [re.compile(p, re.IGNORECASE) for p in [
+        r'(\w+(?:\s+\w+){0,5})\s+(?:is\s+like|works?\s+like|is\s+similar\s+to|resembles?)\s+(\w+(?:\s+\w+){0,5})\s+(?:because|since|in\s+that)\s+(\w+(?:\s+\w+){0,10})',
+    ]]
+
     def __init__(self):
         self.causal_chains = []     # cause → effect → outcome
         self.logical_patterns = []  # if X then Y, X because Y
@@ -34,14 +64,8 @@ class ReasoningPatternExtractor:
 
     def _extract_causal(self, text: str):
         """Extract cause-effect chains."""
-        patterns = [
-            r'(\w+(?:\s+\w+){0,8})\s+(?:causes?|leads?\s+to|results?\s+in|triggers?)\s+(\w+(?:\s+\w+){0,8})',
-            r'[Bb]ecause\s+(\w+(?:\s+\w+){0,8}),\s*(\w+(?:\s+\w+){0,8})',
-            r'(\w+(?:\s+\w+){0,8})\s+(?:since|as|due\s+to)\s+(\w+(?:\s+\w+){0,8})',
-            r'[Ii]f\s+(\w+(?:\s+\w+){0,8}),?\s+then\s+(\w+(?:\s+\w+){0,8})',
-        ]
-        for pat in patterns:
-            for m in re.finditer(pat, text, re.IGNORECASE):
+        for pat in self._CAUSAL_PATS:
+            for m in pat.finditer(text):
                 if len(m.groups()) >= 2:
                     cause = m.group(1).strip()
                     effect = m.group(2).strip()
@@ -54,13 +78,8 @@ class ReasoningPatternExtractor:
 
     def _extract_logical(self, text: str):
         """Extract logical reasoning patterns."""
-        patterns = [
-            r'(\w+(?:\s+\w+){0,6})\s+(?:is|are)\s+(?:a\s+)?(?:type\s+of|kind\s+of|form\s+of|subset\s+of)\s+(\w+(?:\s+\w+){0,6})',
-            r'(\w+(?:\s+\w+){0,6})\s+(?:implies?|means?\s+that)\s+(\w+(?:\s+\w+){0,6})',
-            r'(\w+(?:\s+\w+){0,6})\s+(?:therefore|thus|hence|consequently)\s+(\w+(?:\s+\w+){0,6})',
-        ]
-        for pat in patterns:
-            for m in re.finditer(pat, text, re.IGNORECASE):
+        for pat in self._LOGICAL_PATS:
+            for m in pat.finditer(text):
                 if len(m.groups()) >= 2:
                     self.logical_patterns.append({
                         'premise': m.group(1).strip(),
@@ -70,12 +89,8 @@ class ReasoningPatternExtractor:
 
     def _extract_comparison(self, text: str):
         """Extract comparison reasoning."""
-        patterns = [
-            r'(\w+(?:\s+\w+){0,5})\s+(?:is\s+)?(?:better|worse|faster|slower|larger|smaller|more\s+\w+|less\s+\w+)\s+than\s+(\w+(?:\s+\w+){0,5})\s+(?:because|since|as|due\s+to)\s+(\w+(?:\s+\w+){0,10})',
-            r'(\w+(?:\s+\w+){0,5})\s+(?:vs|versus|compared\s+to)\s+(\w+(?:\s+\w+){0,5})[,.]?\s+(\w+(?:\s+\w+){0,10})',
-        ]
-        for pat in patterns:
-            for m in re.finditer(pat, text, re.IGNORECASE):
+        for pat in self._COMPARISON_PATS:
+            for m in pat.finditer(text):
                 groups = m.groups()
                 if len(groups) >= 2:
                     self.comparison_chains.append({
@@ -87,13 +102,8 @@ class ReasoningPatternExtractor:
 
     def _extract_explanation(self, text: str):
         """Extract explanation chains."""
-        patterns = [
-            r'(\w+(?:\s+\w+){0,5})\s+(?:works?\s+by|operates?\s+by|functions?\s+by)\s+(\w+(?:\s+\w+){0,15})',
-            r'(\w+(?:\s+\w+){0,5})\s+(?:is\s+)?(?:used\s+for|utilized\s+for|employed\s+for)\s+(\w+(?:\s+\w+){0,10})',
-            r'[Tt]he\s+(\w+(?:\s+\w+){0,5})\s+(?:is\s+)?(?:responsible\s+for|in\s+charge\s+of|controls?)\s+(\w+(?:\s+\w+){0,10})',
-        ]
-        for pat in patterns:
-            for m in re.finditer(pat, text, re.IGNORECASE):
+        for pat in self._EXPLANATION_PATS:
+            for m in pat.finditer(text):
                 if len(m.groups()) >= 2:
                     self.explanation_chains.append({
                         'subject': m.group(1).strip(),
@@ -103,13 +113,8 @@ class ReasoningPatternExtractor:
 
     def _extract_problem_solution(self, text: str):
         """Extract problem → solution patterns."""
-        patterns = [
-            r'[Tt]o\s+(?:solve|fix|address|resolve)\s+(\w+(?:\s+\w+){0,8}),?\s*(?:you\s+)?(?:should|can|need\s+to|must)\s+(\w+(?:\s+\w+){0,15})',
-            r'[Tt]he\s+solution\s+(?:is|to)\s+(\w+(?:\s+\w+){0,15})',
-            r'[Hh]ow\s+to\s+(\w+(?:\s+\w+){0,8})[?:.]?\s+(\w+(?:\s+\w+){0,15})',
-        ]
-        for pat in patterns:
-            for m in re.finditer(pat, text, re.IGNORECASE):
+        for pat in self._PROBLEM_PATS:
+            for m in pat.finditer(text):
                 if len(m.groups()) >= 2:
                     self.problem_solutions.append({
                         'problem': m.group(1).strip(),
@@ -119,11 +124,8 @@ class ReasoningPatternExtractor:
 
     def _extract_analogies(self, text: str):
         """Extract analogies (X is like Y)."""
-        patterns = [
-            r'(\w+(?:\s+\w+){0,5})\s+(?:is\s+like|works?\s+like|is\s+similar\s+to|resembles?)\s+(\w+(?:\s+\w+){0,5})\s+(?:because|since|in\s+that)\s+(\w+(?:\s+\w+){0,10})',
-        ]
-        for pat in patterns:
-            for m in re.finditer(pat, text, re.IGNORECASE):
+        for pat in self._ANALOGY_PATS:
+            for m in pat.finditer(text):
                 if len(m.groups()) >= 3:
                     self.analogies.append({
                         'source': m.group(1).strip(),
