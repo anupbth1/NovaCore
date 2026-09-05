@@ -30,6 +30,7 @@
     "unigram_fallback_k": 5,
     "compress_f16_threshold": 0.001,
     "compress_f32_threshold": 0.0001,
+    "cooccurrence_window": 5,
     "ram_safe_overrides": {
       "max_tokens": 80,
       "vocab_size": 20000,
