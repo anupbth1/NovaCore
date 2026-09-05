@@ -1494,11 +1494,19 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
         from novacore.core.reasoning_engine import ReasoningPatternExtractor, DeepReasoner
         from novacore.core.creative_engine import CreativePatternExtractor, CreativeEngine
 
+        import time as _time
+
         log.step("Extracting reasoning patterns...")
         reasoning_ext = ReasoningPatternExtractor()
-        _reasoning_cap = _gd('reasoning_extract_cap')
-        for text in sample_list[:_reasoning_cap]:
+        _reasoning_cap = min(_gd('reasoning_extract_cap'), len(sample_list))
+        _r_t0 = _time.time()
+        for _ri, text in enumerate(sample_list[:_reasoning_cap]):
             reasoning_ext.extract_from_text(text)
+            if (_ri + 1) % 5000 == 0 or (_ri + 1) == _reasoning_cap:
+                _elapsed = _time.time() - _r_t0
+                _rate = (_ri + 1) / _elapsed if _elapsed > 0 else 0
+                _eta = (_reasoning_cap - _ri - 1) / _rate if _rate > 0 else 0
+                print(f"    · reasoning: {_ri + 1}/{_reasoning_cap} ({_elapsed:.0f}s, ~{_rate:.0f}/s, eta ~{_eta:.0f}s)")
         reasoner = DeepReasoner()
         reasoner.patterns = reasoning_ext
         reasoner.save_patterns(os.path.join(out_dir, "reasoning_patterns.json"))
@@ -1507,9 +1515,15 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
 
         log.step("Extracting creative patterns...")
         creative_ext = CreativePatternExtractor()
-        _creative_cap = _gd('creative_extract_cap')
-        for text in sample_list[:_creative_cap]:
+        _creative_cap = min(_gd('creative_extract_cap'), len(sample_list))
+        _c_t0 = _time.time()
+        for _ci, text in enumerate(sample_list[:_creative_cap]):
             creative_ext.extract_from_text(text)
+            if (_ci + 1) % 5000 == 0 or (_ci + 1) == _creative_cap:
+                _elapsed = _time.time() - _c_t0
+                _rate = (_ci + 1) / _elapsed if _elapsed > 0 else 0
+                _eta = (_creative_cap - _ci - 1) / _rate if _rate > 0 else 0
+                print(f"    · creative: {_ci + 1}/{_creative_cap} ({_elapsed:.0f}s, ~{_rate:.0f}/s, eta ~{_eta:.0f}s)")
         creative = CreativeEngine()
         creative.patterns = creative_ext
         creative.save_patterns(os.path.join(out_dir, "creative_patterns.json"))
