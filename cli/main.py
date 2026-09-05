@@ -1398,8 +1398,8 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
         # Patterns: feed first M texts
         if count < _pat_cap:
             extractor.update(text)
-        # Knowledge extraction: cap at pattern_sample_cap (no need to index 2M+ docs)
-        if knowledge_extractor and count < _pat_cap:
+        # Knowledge extraction: feed ALL texts
+        if knowledge_extractor:
             knowledge_extractor.learn_from_document(text, f"doc_{count}")
         # Reservoir: feed ALL texts
         sampler.add(text)
@@ -1470,6 +1470,8 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
 
     # ===== TRAINING UPGRADES (SVD + IDF + Confidence + Multi-Head) =====
     from novacore.core.training_upgrades import TrainingUpgrader
+    from novacore.config import load_config
+    cfg = load_config()
     upgrader = TrainingUpgrader(vocab, config=cfg)
     if upgrader.enabled:
         log.step("Training upgrades: SVD + IDF + Confidence + Multi-Head")
