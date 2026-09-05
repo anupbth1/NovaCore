@@ -1398,8 +1398,8 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
         # Patterns: feed first M texts
         if count < _pat_cap:
             extractor.update(text)
-        # Knowledge extraction: feed ALL texts
-        if knowledge_extractor:
+        # Knowledge extraction: cap at pattern_sample_cap (no need to index 2M+ docs)
+        if knowledge_extractor and count < _pat_cap:
             knowledge_extractor.learn_from_document(text, f"doc_{count}")
         # Reservoir: feed ALL texts
         sampler.add(text)
