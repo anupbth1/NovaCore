@@ -549,6 +549,8 @@ def cmd_train(args):
                     streaming = True
                     random_sample = False
                     _add = False
+                    _absorb = False
+                    _uid = ds_cfg.get("uid_key") or get_hf("uid_key")
                 else:
                     # "download" -> ALWAYS materialize (fetch raw shards to disk
                     # + build the accumulated pool).  random / add_datasets /
