@@ -485,15 +485,11 @@ class ChatSession:
 
     def generate(self, prompt, max_tokens=None, temperature=None, use_history=True, verbose=False):
         """
-        Generate response. ALL from model, NO config file.
-        Priority:
-          1. Math detection
-          2. Semantic retrieval from reservoir
-          2.5 Knowledge base
-          3. Deep reasoning
-          3.5 Creative generation
-          4. Neural engine
-          5. Predictor fallback
+        Generate response with Virtual Simulation on ALL paths.
+        
+        Every candidate from every priority goes through virtual simulation.
+        If score < threshold → retry with next candidate / next priority.
+        Only returns when virtual simulation PASSES.
         """
         if not self._loaded:
             self.load()
@@ -525,146 +521,166 @@ class ChatSession:
         log(f"PARAMS: max_tokens={max_tokens}, temperature={temperature}, history={use_history}")
         log(f"{'='*60}")
 
-        # Priority 1: Math detection
+        # ============================================================
+        # VIRTUAL SIMULATION WRAPPER
+        # ============================================================
+        def run_virtual_sim(candidate_text, source_name):
+            """Run virtual simulation on a candidate. Returns (passed, score, corrected_text)."""
+            if not self.model:
+                return True, 1.0, candidate_text  # no model = no sim
+            
+            log(f"  🔮 VIRTUAL SIM on [{source_name}]...", CYAN)
+            log(f"     Input: {candidate_text[:100]}...", GRAY)
+            
+            # Use the model's neural engine virtual simulation
+            sim_result = self.model.neural_engine.virtual_simulation.simulate(prompt, candidate_text)
+            score = sim_result.get('score', 0.0)
+            final_text = sim_result.get('final_response', candidate_text)
+            passed = sim_result.get('passed', False)
+            
+            log(f"     Score: {score:.4f} (threshold={self.model.neural_engine.virtual_simulation.quality_threshold:.2f})", 
+                GREEN if passed else YELLOW)
+            if sim_result.get('corrected'):
+                log(f"     ✓ CORRECTED by virtual sim", GREEN)
+                log(f"     Corrected: {final_text[:100]}...", GRAY)
+            elif passed:
+                log(f"     ✓ PASSED", GREEN)
+            else:
+                log(f"     ✗ FAILED — will retry/fallback", YELLOW)
+            
+            # Also run verification engine for extra check
+            if not passed:
+                verify_result = self.model.neural_engine.verification_engine.verify_and_retry(prompt, final_text)
+                if verify_result.get('verified'):
+                    final_text = verify_result['final_response']
+                    score = max(score, verify_result['scores'][-1] if verify_result['scores'] else score)
+                    passed = True
+                    log(f"     ✓ VERIFICATION PASSED (retries={verify_result['attempts']})", GREEN)
+                else:
+                    log(f"     ✗ VERIFICATION FAILED", YELLOW)
+            
+            return passed, score, final_text
+
+        # ============================================================
+        # PRIORITY 1: Math (bypass virtual sim — exact computation)
+        # ============================================================
         log_step("PRIORITY 1: Math Detection", "Checking for mathematical expressions...")
         if self.model:
             math_result = self.model.neural_engine.python_terminal.parse_and_compute(prompt)
             if math_result is not None:
-                log(f"  ✓ MATH DETECTED: '{prompt}' → computed result", GREEN)
+                log(f"  ✓ MATH DETECTED: computed result", GREEN)
                 log(f"  RESULT: {math_result}", GREEN)
                 log(f"{'='*60}")
                 return math_result
             else:
                 log("  ✗ No math expression found", YELLOW)
 
-        # Priority 2: Semantic retrieval
-        log_step("PRIORITY 2: Semantic Retrieval", f"Searching reservoir (threshold={SEMANTIC_SEARCH_THRESHOLD}, top_k={SEMANTIC_SEARCH_TOP_K})")
-        if self.semantic_index and self.semantic_index._built:
+        # ============================================================
+        # CANDIDATE GENERATORS — each yields (source_name, candidate_text)
+        # ============================================================
+        
+        def gen_semantic():
+            """Generate candidates from semantic index."""
+            if not (self.semantic_index and self.semantic_index._built):
+                return
             vocab = self._get_vocab()
-            log(f"  Building query vector...", CYAN)
-            qvec = self.semantic_index._encode_query(prompt, vocab)
-            if qvec is not None:
-                log(f"  Query vector: dim={len(qvec)}, norm={float(np.linalg.norm(qvec)):.4f}", CYAN)
             results = self.semantic_index.search(prompt, vocab, top_k=SEMANTIC_SEARCH_TOP_K)
-            log(f"  Found {len(results)} candidates", BLUE)
             for i, (score, ans) in enumerate(results):
-                preview = ans[:80].replace('\n', ' ')
-                log(f"    [{i+1}] score={score:.4f} | {preview}...", MAGENTA)
-            if results:
-                best_score, best_answer = results[0]
-                if (best_score >= SEMANTIC_SEARCH_THRESHOLD and best_answer
-                        and len(best_answer) > 10
-                        and self._is_relevant_answer(prompt, best_answer)):
-                    log(f"  ✓ BEST MATCH (score={best_score:.4f}) — returning", GREEN)
-                    log(f"  ANSWER: {best_answer[:200]}...", GREEN)
-                    log(f"{'='*60}")
-                    return best_answer
-                log(f"  ✗ Best score {best_score:.4f} below threshold {SEMANTIC_SEARCH_THRESHOLD} or irrelevant", YELLOW)
-                if len(results) > 1:
-                    log("  Trying relaxed threshold...", CYAN)
-                    for score, answer in results[1:]:
-                        if (score >= SEMANTIC_SEARCH_THRESHOLD * SEMANTIC_SEARCH_RELAXED
-                                and answer and len(answer) > 10
-                                and self._is_relevant_answer(prompt, answer)):
-                            log(f"  ✓ RELAXED MATCH (score={score:.4f}) — returning", GREEN)
-                            log(f"  ANSWER: {answer[:200]}...", GREEN)
-                            log(f"{'='*60}")
-                            return answer
-                    log("  ✗ No relaxed matches pass relevance check", YELLOW)
-            else:
-                log("  ✗ No semantic matches found", YELLOW)
-        else:
-            log("  ✗ Semantic index not built", YELLOW)
+                if score >= SEMANTIC_SEARCH_THRESHOLD and ans and len(ans) > 10:
+                    if self._is_relevant_answer(prompt, ans):
+                        yield f"semantic[{i+1}]", ans
+            # Relaxed threshold
+            for i, (score, ans) in enumerate(results):
+                if score >= SEMANTIC_SEARCH_THRESHOLD * SEMANTIC_SEARCH_RELAXED and ans and len(ans) > 10:
+                    if self._is_relevant_answer(prompt, ans):
+                        yield f"semantic-relaxed[{i+1}]", ans
 
-        # Priority 2b: Word-overlap pool matching
-        log_step("PRIORITY 2b: Word-Overlap Pool Matching", f"pool_pairs={len(self.pool_pairs)}")
-        if self.pool_pairs:
+        def gen_pool():
+            """Generate candidates from word-overlap pool matching."""
+            if not self.pool_pairs:
+                return
             matched = self._match_pool(prompt)
             if matched and len(matched) > 10:
-                log(f"  ✓ POOL MATCH FOUND", GREEN)
-                log(f"  ANSWER: {matched[:200]}...", GREEN)
-                log(f"{'='*60}")
-                return matched
-            else:
-                log("  ✗ No pool match above threshold", YELLOW)
-        else:
-            log("  ✗ No pool pairs available", YELLOW)
+                yield "pool_match", matched
 
-        # Priority 2.5: Knowledge base
-        log_step("PRIORITY 2.5: Knowledge Base", f"knowledge_index={'loaded' if self.knowledge_index else 'none'}")
-        if self.knowledge_index:
+        def gen_knowledge():
+            """Generate candidates from knowledge base."""
+            if not self.knowledge_index:
+                return
             results = self.knowledge_index.search(prompt, top_k=KNOWLEDGE_SEARCH_TOP_K)
-            if results:
-                best = results[0]
-                answer = (best.get('definition') or best.get('answer')
-                          or best.get('object') or '')
-                if answer and len(answer) > 10:
-                    log(f"  ✓ KNOWLEDGE MATCH: {answer[:150]}...", GREEN)
-                    log(f"{'='*60}")
-                    return answer
-                log("  ✗ Knowledge result too short", YELLOW)
-            else:
-                log("  ✗ No knowledge matches", YELLOW)
+            for i, res in enumerate(results):
+                ans = (res.get('definition') or res.get('answer') or res.get('object') or '')
+                if ans and len(ans) > 10:
+                    yield f"knowledge[{i+1}]", ans
 
-        # Priority 3: Deep reasoning
-        log_step("PRIORITY 3: Deep Reasoning", f"reasoner={'loaded' if self.reasoner else 'none'}")
-        if self.reasoner:
-            log("  Running reasoning engine...", CYAN)
+        def gen_reasoning():
+            """Generate candidates from deep reasoning."""
+            if not self.reasoner:
+                return
             reasoned = self.reasoner.reason(prompt, knowledge_index=self.knowledge_index)
             if reasoned and len(reasoned) > 10:
-                log(f"  ✓ REASONED OUTPUT: {reasoned[:150]}...", GREEN)
-                log(f"{'='*60}")
-                return reasoned
-            log("  ✗ Reasoning output too short/empty", YELLOW)
+                yield "reasoning", reasoned
 
-        # Priority 3.5: Creative generation
-        log_step("PRIORITY 3.5: Creative Generation", f"creative_engine={'loaded' if self.creative else 'none'}")
-        if self.creative:
-            log("  Running creative engine...", CYAN)
+        def gen_creative():
+            """Generate candidates from creative engine."""
+            if not self.creative:
+                return
             creative = self.creative.generate(prompt, reservoir=self.reservoir_samples)
             if creative and len(creative) > 20:
-                log(f"  ✓ CREATIVE OUTPUT: {creative[:150]}...", GREEN)
-                log(f"{'='*60}")
-                return creative
-            log("  ✗ Creative output too short/empty", YELLOW)
+                yield "creative", creative
 
-        # Priority 4: Neural engine
-        log_step("PRIORITY 4: Neural Engine", "Running NovaNeuralEngine.process()")
-        if self.model:
-            log("  Calling neural_engine.process()...", CYAN)
-            log("    → Embedding query", CYAN)
-            log("    → Neural forward pass", CYAN)
-            log("    → Neural routing to reservoir", CYAN)
-            log("    → Virtual simulation (quality check)", CYAN)
-            log("    → Verification engine (retry if needed)", CYAN)
+        def gen_neural():
+            """Generate candidate from neural engine."""
+            if not self.model:
+                return
             response = self.model.generate(prompt, max_tokens)
             if response and len(response) > 10:
-                log(f"  ✓ NEURAL ENGINE OUTPUT: {response[:150]}...", GREEN)
-                log(f"{'='*60}")
-                return response
-            log("  ✗ Neural engine output too short/empty", YELLOW)
+                yield "neural", response
 
-        # Priority 5: Predictor fallback
-        log_step("PRIORITY 5: Predictor Fallback", "Running PatternPredictor.reply()")
-        if self.predictor:
-            log("  Building context from history...", CYAN)
+        def gen_predictor():
+            """Generate candidate from predictor."""
+            if not self.predictor:
+                return
             context = self._build_context(prompt, use_history)
-            log(f"  Context: {context[:100]}...", CYAN)
-            log("  Calling PatternPredictor.generate() with semantic_index...", CYAN)
-            log("    → Semantic index search (fallback)", CYAN)
-            log("    → SVD semantic search (if upgrader)", CYAN)
-            log("    → n-gram pattern generation", CYAN)
-            log("    → Virtual simulation (verify_and_correct)", CYAN)
-            log("      → VirtualVerifier.score_text()", CYAN)
-            log("      → VirtualSelfCorrector.correct_text()", CYAN)
             response = self.predictor.reply(context, max_tokens, temperature)
             if response:
-                log(f"  ✓ PREDICTOR OUTPUT: {response[:150]}...", GREEN)
-                log(f"{'='*60}")
-                return response
-            log("  ✗ Predictor returned empty", YELLOW)
+                yield "predictor", response
 
-        log("  ✗ ALL PRIORITIES EXHAUSTED — returning default", YELLOW)
+        # ============================================================
+        # MAIN LOOP: Try each priority, run virtual sim on each candidate
+        # ============================================================
+        all_generators = [
+            ("SEMANTIC RETRIEVAL", gen_semantic),
+            ("POOL MATCHING", gen_pool),
+            ("KNOWLEDGE BASE", gen_knowledge),
+            ("DEEP REASONING", gen_reasoning),
+            ("CREATIVE GENERATION", gen_creative),
+            ("NEURAL ENGINE", gen_neural),
+            ("PREDICTOR FALLBACK", gen_predictor),
+        ]
+
+        for priority_name, gen_func in all_generators:
+            log_step(f"PRIORITY: {priority_name}", "")
+            try:
+                for source_name, candidate in gen_func():
+                    log(f"  Candidate from {source_name}: {candidate[:120]}...", BLUE)
+                    
+                    # Run virtual simulation
+                    passed, score, final_text = run_virtual_sim(candidate, source_name)
+                    
+                    if passed:
+                        log(f"  ✓ VIRTUAL SIM PASSED — returning final answer", GREEN)
+                        log(f"  FINAL: {final_text[:200]}...", GREEN)
+                        log(f"{'='*60}")
+                        return final_text
+                    else:
+                        log(f"  → Candidate rejected, trying next...", YELLOW)
+            except Exception as e:
+                log(f"  ✗ {priority_name} error: {e}", YELLOW)
+                continue
+
+        # Nothing passed virtual simulation
+        log("  ✗ ALL CANDIDATES FAILED VIRTUAL SIM — returning best effort", YELLOW)
         log(f"{'='*60}")
         return "I'm not sure how to respond to that."
 
