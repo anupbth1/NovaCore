@@ -562,7 +562,7 @@ class ChatSession:
             return passed, score, final_text
 
         # ============================================================
-        # PRIORITY 1: Math (bypass virtual sim — exact computation)
+        # PRIORITY 1: Math (exact computation — auto-passes virtual sim)
         # ============================================================
         log_step("PRIORITY 1: Math Detection", "Checking for mathematical expressions...")
         if self.model:
@@ -570,6 +570,8 @@ class ChatSession:
             if math_result is not None:
                 log(f"  ✓ MATH DETECTED: computed result", GREEN)
                 log(f"  RESULT: {math_result}", GREEN)
+                # Math is exact computation — bypass virtual sim, return directly
+                log(f"  ✓ EXACT COMPUTATION — auto-passes virtual sim", GREEN)
                 log(f"{'='*60}")
                 return math_result
             else:
