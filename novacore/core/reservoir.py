@@ -11,9 +11,9 @@ class ReservoirSampler:
     def __init__(self, k=None, seed=None):
         from ..config import get_default
         if k is None:
-            k = get_default('reservoir_sample_size')
+            k = get_default('reservoir_sample_size') or 100000
         if seed is None:
-            seed = get_default('reservoir_seed')
+            seed = get_default('reservoir_seed') or 42
         self.k = k
         self.reservoir = []
         self.seen = 0
