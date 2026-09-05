@@ -479,8 +479,10 @@ class ChatSession:
                 return math_result
 
         # Priority 2: Semantic retrieval from reservoir — THE PRIMARY PATH
-        threshold = get_default('semantic_search_threshold', 0.35)
-        results = self.semantic_index.search(prompt, self._get_vocab(), top_k=5)
+        threshold = get_default('semantic_search_threshold')
+        top_k = get_default('semantic_search_top_k')
+        relaxed = get_default('semantic_search_relaxed_factor')
+        results = self.semantic_index.search(prompt, self._get_vocab(), top_k=top_k)
         if results:
             best_score, best_answer = results[0]
             if (best_score >= threshold and best_answer
@@ -490,7 +492,7 @@ class ChatSession:
             # Try second-best if first is irrelevant
             if len(results) > 1:
                 for score, answer in results[1:]:
-                    if (score >= threshold * 0.85 and answer
+                    if (score >= threshold * relaxed and answer
                             and len(answer) > 10
                             and self._is_relevant_answer(prompt, answer)):
                         return answer
@@ -503,7 +505,7 @@ class ChatSession:
 
         # Priority 2.5: Knowledge base retrieval
         if self.knowledge_index:
-            results = self.knowledge_index.search(prompt, top_k=3)
+            results = self.knowledge_index.search(prompt, top_k=get_default('knowledge_search_top_k'))
             if results:
                 best = results[0]
                 answer = (best.get('definition') or best.get('answer')
@@ -588,20 +590,17 @@ class ChatSession:
         answer_lower = answer.lower()
 
         # Creative queries should accept any length answer
-        creative_kw = {'story', 'poem', 'poetry', 'write', 'create', 'compose',
-                       'narrative', 'fiction', 'tale'}
+        creative_kw = set(get_default('creative_keywords', []))
         if any(kw in query_lower for kw in creative_kw):
             return True
 
         # Answers that look like stories (narrative indicators) are likely irrelevant
         # for non-creative queries
-        story_indicators = ['once upon a time', 'there was', 'one day',
-                           'he said', 'she said', 'they said', 'fred was',
-                           'tom was', 'sarah was', 'john was']
-        answer_first_50 = answer_lower[:200]
-        for ind in story_indicators:
-            if ind in answer_first_50:
-                # The answer looks like a story — only accept if query is creative
+        story_inds = get_default('story_indicators', [])
+        prefix_len = get_default('relevance_check_prefix_len')
+        answer_first = answer_lower[:prefix_len]
+        for ind in story_inds:
+            if ind in answer_first:
                 return False
 
         return True
@@ -640,20 +639,25 @@ class ChatSession:
 
             if query_content:
                 overlap = len(query_content & inst_words)
+                q_weight = get_default('pool_match_query_weight')
+                i_weight = get_default('pool_match_inst_weight')
                 score = overlap / max(len(query_content), 1)
                 inst_overlap = overlap / max(len(inst_words), 1) if inst_words else 0
-                score = score * 0.7 + inst_overlap * 0.3
+                score = score * q_weight + inst_overlap * i_weight
 
-                if len(answer) > 50:
-                    score *= 1.1
-                if len(answer) > 200:
-                    score *= 1.1
+                short_thresh = get_default('pool_match_short_threshold')
+                long_thresh = get_default('pool_match_long_threshold')
+                length_bonus = get_default('pool_match_length_bonus')
+                if len(answer) > short_thresh:
+                    score *= length_bonus
+                if len(answer) > long_thresh:
+                    score *= length_bonus
 
                 if score > best_score:
                     best_score = score
                     best_answer = answer
 
-        if best_score >= 0.3 and best_answer:
+        if best_score >= get_default('pool_match_min_score') and best_answer:
             return best_answer
         return ''
 

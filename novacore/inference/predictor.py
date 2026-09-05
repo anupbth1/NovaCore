@@ -148,7 +148,7 @@ class PatternPredictor(Predictor):
                 vocab=self.vocab,
                 extractor=extractor,
                 reservoir_sample=self.reservoir_samples,
-                config={"sim_threshold": 0.30},
+                config={"sim_threshold": get_default('sim_threshold')},
             )
             
             # Apply correction with query context
@@ -182,8 +182,8 @@ class PatternPredictor(Predictor):
 
         # Priority 1: Try built-in semantic index (IDF-weighted cosine similarity)
         if self.semantic_index is not None and self.semantic_index._built:
-            results = self.semantic_index.search(prompt, self.vocab, top_k=3)
-            if results and results[0][0] > get_default('semantic_search_threshold', 0.25):
+            results = self.semantic_index.search(prompt, self.vocab, top_k=get_default('semantic_search_top_k'))
+            if results and results[0][0] > get_default('semantic_search_threshold'):
                 best_text = results[0][1]
                 if best_text and len(best_text) > 10:
                     return best_text
@@ -191,9 +191,9 @@ class PatternPredictor(Predictor):
         # Priority 2: SVD-based semantic search (if upgrader available)
         if self.upgrader and self.upgrader.semantic_search_enabled and self.reservoir_samples:
             sem_results = self.upgrader.semantic_search(
-                prompt, self.reservoir_samples, top_k=3
+                prompt, self.reservoir_samples, top_k=get_default('semantic_search_top_k')
             )
-            if sem_results and sem_results[0][0] > 0.4:
+            if sem_results and sem_results[0][0] > get_default('svd_semantic_min_score'):
                 best_text = sem_results[0][2]
                 if len(best_text) > 10:
                     return best_text[:max_tokens * 4]

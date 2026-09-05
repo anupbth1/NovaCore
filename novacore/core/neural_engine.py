@@ -601,19 +601,21 @@ class NovaNeuralEngine:
         Uses semantic index (cosine similarity) when available,
         falls back to word overlap otherwise.
         """
+        from ..config import get_default
         # Prefer semantic index (set by ChatSession)
         si = getattr(self, '_semantic_index', None)
         if si is not None and si._built:
             vocab = getattr(self, '_vocab', None)
             if vocab is not None:
-                results = si.search(query, vocab, top_k=3)
-                if results and results[0][0] > 0.1:
+                results = si.search(query, vocab, top_k=get_default('semantic_search_top_k'))
+                if results and results[0][0] > get_default('neural_best_match_min_score'):
                     return clean_artifacts(results[0][1])
         # Fallback: word overlap
         query_words = set(query.lower().split())
         best_text = ""
         best_score = 0
-        for text in self.reservoir[:500]:
+        scan_limit = get_default('neural_reservoir_scan_limit')
+        for text in self.reservoir[:scan_limit]:
             if not text:
                 continue
             text_words = set(text.lower().split())
@@ -638,20 +640,22 @@ class NovaNeuralEngine:
 
     def _generate_from_neural(self, query: str, neural_output: List[float]) -> str:
         """Generate response using semantic search on reservoir + dataset knowledge."""
+        from ..config import get_default
         # First try semantic index (much better than word overlap)
         si = getattr(self, '_semantic_index', None)
         if si is not None and si._built:
             vocab = getattr(self, '_vocab', None)
             if vocab is not None:
-                results = si.search(query, vocab, top_k=3)
-                if results and results[0][0] > 0.15:
+                results = si.search(query, vocab, top_k=get_default('semantic_search_top_k'))
+                if results and results[0][0] > get_default('neural_semantic_min_score'):
                     return clean_artifacts(results[0][1])
 
         # Fallback: word overlap on reservoir
         query_words = set(query.lower().split())
+        scan_limit = get_default('neural_reservoir_scan_limit')
         if self.reservoir:
             scored_reservoir = []
-            for text in self.reservoir[:500]:
+            for text in self.reservoir[:scan_limit]:
                 if not text:
                     continue
                 text_words = set(text.lower().split())
@@ -674,7 +678,8 @@ class NovaNeuralEngine:
         if scored_patterns:
             scored_patterns.sort(key=lambda x: x[1], reverse=True)
             response_words = []
-            for gram, score in scored_patterns[:5]:
+            pattern_top_k = get_default('pattern_top_k')
+            for gram, score in scored_patterns[:pattern_top_k]:
                 response_words.extend(gram)
             if response_words:
                 return clean_artifacts(' '.join(response_words))
