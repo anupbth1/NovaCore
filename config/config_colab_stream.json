@@ -31,6 +31,10 @@
     "compress_f16_threshold": 0.001,
     "compress_f32_threshold": 0.0001,
     "cooccurrence_window": 5,
+    "memory_cleanup_interval": 500000,
+    "reasoning_extract_cap": 50000,
+    "creative_extract_cap": 50000,
+    "reservoir_max_chars": 4096,
     "ram_safe_overrides": {
       "max_tokens": 4096,
       "vocab_size": 50000,
