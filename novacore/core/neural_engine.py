@@ -601,21 +601,21 @@ class NovaNeuralEngine:
         Uses semantic index (cosine similarity) when available,
         falls back to word overlap otherwise.
         """
-        from ..config import get_default
         # Prefer semantic index (set by ChatSession)
         si = getattr(self, '_semantic_index', None)
         if si is not None and si._built:
             vocab = getattr(self, '_vocab', None)
             if vocab is not None:
-                results = si.search(query, vocab, top_k=get_default('semantic_search_top_k'))
-                if results and results[0][0] > get_default('neural_best_match_min_score'):
+                from ..inference.chat import SEMANTIC_SEARCH_TOP_K, NEURAL_BEST_MATCH_MIN_SCORE
+                results = si.search(query, vocab, top_k=SEMANTIC_SEARCH_TOP_K)
+                if results and results[0][0] > NEURAL_BEST_MATCH_MIN_SCORE:
                     return clean_artifacts(results[0][1])
         # Fallback: word overlap
         query_words = set(query.lower().split())
         best_text = ""
         best_score = 0
-        scan_limit = get_default('neural_reservoir_scan_limit')
-        for text in self.reservoir[:scan_limit]:
+        from ..inference.chat import NEURAL_RESERVOIR_SCAN_LIMIT
+        for text in self.reservoir[:NEURAL_RESERVOIR_SCAN_LIMIT]:
             if not text:
                 continue
             text_words = set(text.lower().split())
@@ -640,22 +640,22 @@ class NovaNeuralEngine:
 
     def _generate_from_neural(self, query: str, neural_output: List[float]) -> str:
         """Generate response using semantic search on reservoir + dataset knowledge."""
-        from ..config import get_default
         # First try semantic index (much better than word overlap)
         si = getattr(self, '_semantic_index', None)
         if si is not None and si._built:
             vocab = getattr(self, '_vocab', None)
             if vocab is not None:
-                results = si.search(query, vocab, top_k=get_default('semantic_search_top_k'))
-                if results and results[0][0] > get_default('neural_semantic_min_score'):
+                from ..inference.chat import SEMANTIC_SEARCH_TOP_K, NEURAL_SEMANTIC_MIN_SCORE
+                results = si.search(query, vocab, top_k=SEMANTIC_SEARCH_TOP_K)
+                if results and results[0][0] > NEURAL_SEMANTIC_MIN_SCORE:
                     return clean_artifacts(results[0][1])
 
         # Fallback: word overlap on reservoir
         query_words = set(query.lower().split())
-        scan_limit = get_default('neural_reservoir_scan_limit')
+        from ..inference.chat import NEURAL_RESERVOIR_SCAN_LIMIT
         if self.reservoir:
             scored_reservoir = []
-            for text in self.reservoir[:scan_limit]:
+            for text in self.reservoir[:NEURAL_RESERVOIR_SCAN_LIMIT]:
                 if not text:
                     continue
                 text_words = set(text.lower().split())

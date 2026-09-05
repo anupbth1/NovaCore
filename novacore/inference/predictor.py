@@ -106,6 +106,9 @@ class PatternPredictor(Predictor):
         self.reservoir_samples = reservoir_samples or []
         self.upgrader = None
         self.semantic_index = semantic_index
+        # Model metadata values (set by ChatSession for zero-config chat)
+        self.model_max_tokens = 4096
+        self.model_temperature = 0.7
 
         # Load training upgrades if available
         if weights_dir:
@@ -133,9 +136,8 @@ class PatternPredictor(Predictor):
         
         All content comes from the dataset patterns extracted during training.
         """
-        from ..config import get_default
-        max_tokens = max_tokens if max_tokens is not None else get_default('max_tokens')
-        temperature = temperature if temperature is not None else get_default('temperature')
+        max_tokens = max_tokens if max_tokens is not None else self.model_max_tokens
+        temperature = temperature if temperature is not None else self.model_temperature
         
         # Generate using pattern matching from dataset
         result = self._generate_pattern_based(prompt, max_tokens, temperature)
@@ -143,12 +145,13 @@ class PatternPredictor(Predictor):
         # Apply virtual simulation for quality improvement (uses dataset knowledge)
         try:
             from ..virtual_sim import SimulationEngine
+            from .chat import SIM_THRESHOLD
             extractor = getattr(self, 'patterns', None) or None
             engine = SimulationEngine(
                 vocab=self.vocab,
                 extractor=extractor,
                 reservoir_sample=self.reservoir_samples,
-                config={"sim_threshold": get_default('sim_threshold')},
+                config={"sim_threshold": SIM_THRESHOLD},
             )
             
             # Apply correction with query context
@@ -177,23 +180,24 @@ class PatternPredictor(Predictor):
     
     def _generate_pattern_based(self, prompt, max_tokens, temperature):
         """Pattern-based generation with semantic search upgrade."""
-        from ..config import get_default
         import random
 
-        # Priority 1: Try built-in semantic index (IDF-weighted cosine similarity)
+        # Priority 1: Try built-in semantic index
         if self.semantic_index is not None and self.semantic_index._built:
-            results = self.semantic_index.search(prompt, self.vocab, top_k=get_default('semantic_search_top_k'))
-            if results and results[0][0] > get_default('semantic_search_threshold'):
+            from .chat import SEMANTIC_SEARCH_TOP_K, SEMANTIC_SEARCH_THRESHOLD
+            results = self.semantic_index.search(prompt, self.vocab, top_k=SEMANTIC_SEARCH_TOP_K)
+            if results and results[0][0] > SEMANTIC_SEARCH_THRESHOLD:
                 best_text = results[0][1]
                 if best_text and len(best_text) > 10:
                     return best_text
 
         # Priority 2: SVD-based semantic search (if upgrader available)
         if self.upgrader and self.upgrader.semantic_search_enabled and self.reservoir_samples:
+            from .chat import SEMANTIC_SEARCH_TOP_K, SVD_SEMANTIC_MIN_SCORE
             sem_results = self.upgrader.semantic_search(
-                prompt, self.reservoir_samples, top_k=get_default('semantic_search_top_k')
+                prompt, self.reservoir_samples, top_k=SEMANTIC_SEARCH_TOP_K
             )
-            if sem_results and sem_results[0][0] > get_default('svd_semantic_min_score'):
+            if sem_results and sem_results[0][0] > SVD_SEMANTIC_MIN_SCORE:
                 best_text = sem_results[0][2]
                 if len(best_text) > 10:
                     return best_text[:max_tokens * 4]
@@ -216,18 +220,22 @@ class PatternPredictor(Predictor):
                 word = candidates[random.choices(range(len(candidates)), probs)[0]][0]
             result += (" " if result else "") + word
             current_tokens.append(word)
-            current_tokens = current_tokens[-get_default('generation_history_tokens'):]
+            current_tokens = current_tokens[-10:]  # history window
 
         return result
 
     def _next_candidates(self, tokens):
         """Get candidate next words from n-gram patterns."""
-        from ..config import get_default
         candidates = {}
         if not tokens:
             return []
+        # Infer max n-gram from stored patterns
+        max_n = 1
+        for gram in self.patterns.patterns:
+            if len(gram) > max_n:
+                max_n = len(gram)
         # Look at last n-1 tokens for n>=2 patterns
-        for n in range(get_default('ngram_range')[1], 1, -1):
+        for n in range(max_n, 1, -1):
             if len(tokens) < n - 1:
                 continue
             prefix = tuple(tokens[-(n-1):])
@@ -245,7 +253,6 @@ class PatternPredictor(Predictor):
 
     def _unigram_fallback(self):
         """Count unigram frequencies from stored patterns as fallback."""
-        from ..config import get_default
         freq = {}
         for (gram, count) in self.patterns.patterns.items():
             if len(gram) == 2:
@@ -254,4 +261,4 @@ class PatternPredictor(Predictor):
                     freq[w] = freq.get(w, 0) + count
         if not freq:
             return []
-        return sorted(freq.items(), key=lambda x: -x[1])[:get_default('unigram_fallback_k')]
+        return sorted(freq.items(), key=lambda x: -x[1])[:10]

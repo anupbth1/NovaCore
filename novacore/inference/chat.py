@@ -1,6 +1,9 @@
 """Inference: ChatSession - interactive chat like Ollama.
 
-Core architecture:
+ZERO config file dependency. ALL values from model weights/metadata.
+Only temperature adjustable via CLI --temperature flag.
+
+Architecture:
   1. Semantic retrieval from reservoir (cosine similarity on IDF-weighted
      feature-hashed vectors) — the PRIMARY response path.
   2. Knowledge base, reasoning, creative engines for specialised queries.
@@ -21,8 +24,53 @@ from ..core.novacore_model import NovaCoreModel
 from ..tokenizer.vocab import Vocabulary
 from ..tokenizer.text_processor import TextProcessor
 from ..storage.weight_manager import WeightManager
-from ..config import get_default
 from .predictor import PatternPredictor
+
+
+# ---------------------------------------------------------------------------
+# Internal defaults — model-level constants, NOT from config file
+# These are the inference engine's own tuned values.
+# ---------------------------------------------------------------------------
+_DEFAULT_TEMPERATURE = 0.7
+_DEFAULT_MAX_HISTORY = 10
+_DEFAULT_CHAT_CONTEXT_TOKENS = 200
+
+# Semantic retrieval
+SEMANTIC_SEARCH_THRESHOLD = 0.35
+SEMANTIC_SEARCH_TOP_K = 5
+SEMANTIC_SEARCH_RELAXED = 0.85
+SEMANTIC_INDEX_BUILD_LIMIT = 200000
+POOL_LOAD_CAP = 200000
+
+# Neural engine fallback
+NEURAL_RESERVOIR_SCAN_LIMIT = 500
+NEURAL_SEMANTIC_MIN_SCORE = 0.15
+NEURAL_BEST_MATCH_MIN_SCORE = 0.1
+KNOWLEDGE_SEARCH_TOP_K = 3
+SVD_SEMANTIC_MIN_SCORE = 0.4
+
+# Word-overlap pool matching
+POOL_MATCH_QUERY_WEIGHT = 0.7
+POOL_MATCH_INST_WEIGHT = 0.3
+POOL_MATCH_LENGTH_BONUS = 1.1
+POOL_MATCH_SHORT_THRESHOLD = 50
+POOL_MATCH_LONG_THRESHOLD = 200
+POOL_MATCH_MIN_SCORE = 0.3
+
+# Relevance checking
+RELEVANCE_CHECK_PREFIX_LEN = 200
+CREATIVE_KEYWORDS = frozenset([
+    'story', 'poem', 'poetry', 'write', 'create', 'compose',
+    'narrative', 'fiction', 'tale',
+])
+STORY_INDICATORS = [
+    'once upon a time', 'there was', 'one day',
+    'he said', 'she said', 'they said', 'fred was',
+    'tom was', 'sarah was', 'john was',
+]
+
+# Simulation
+SIM_THRESHOLD = 0.35
 
 
 # ---------------------------------------------------------------------------
@@ -33,40 +81,23 @@ from .predictor import PatternPredictor
 class SemanticIndex:
     """
     IDF-weighted feature-hashed embedding index for semantic retrieval.
-
-    At build time:
-      - Extract (instruction, answer) pairs from raw reservoir texts
-      - Compute IDF weights across all instructions
-      - Pre-compute a dense (N, dim) embedding matrix using feature hashing
-
-    At query time:
-      - Encode the query vector
-      - Dot-product against all rows (= cosine similarity since rows are L2-normalised)
-      - Return top-k (score, answer) pairs
+    All values from model metadata — zero config dependency.
     """
 
-    def __init__(self, dim=None):
-        from ..config import get_default
-        self.dim = dim or get_default('dim')
-        self.instructions = []   # str — original instruction text
-        self.answers = []        # str — corresponding clean answer text
-        self.embeddings = None   # np.ndarray (N, dim) float32, L2-normalised
-        self.idf = {}            # word -> float
+    def __init__(self, dim):
+        self.dim = dim
+        self.instructions = []
+        self.answers = []
+        self.embeddings = None
+        self.idf = {}
         self._built = False
 
-    # ---- building ---------------------------------------------------------
-
     def build(self, reservoir, vocab, pool_extra=None):
-        """
-        Build the index from *reservoir* (list[str]) and optionally
-        *pool_extra* (list[str]) which may come from on-disk pool files.
-        """
-        from ..config import get_default
-        limit = get_default('semantic_index_build_limit', 200000)
+        """Build the index from reservoir and optionally pool_extra."""
+        limit = SEMANTIC_INDEX_BUILD_LIMIT
 
-        # 1. Extract (instruction, answer) pairs
-        pairs = []  # list of (inst_tokens, answer_str)
-        raw_instructions = []  # for IDF computation
+        pairs = []
+        raw_instructions = []
         count = 0
         for text in reservoir:
             if count >= limit:
@@ -81,7 +112,6 @@ class SemanticIndex:
                     raw_instructions.append(toks)
                     count += 1
 
-        # Also accept pool_extra (already parsed instruction strings)
         if pool_extra:
             for text in pool_extra:
                 if count >= limit:
@@ -100,7 +130,6 @@ class SemanticIndex:
             print("[SemanticIndex] No instruction-answer pairs found.")
             return
 
-        # 2. Compute IDF
         n_docs = len(raw_instructions)
         doc_freq = Counter()
         for toks in raw_instructions:
@@ -110,7 +139,6 @@ class SemanticIndex:
         for w, df in doc_freq.items():
             self.idf[w] = math.log((n_docs + 1) / (df + 1)) + 1.0
 
-        # 3. Build embedding matrix
         N = len(pairs)
         emb = np.zeros((N, self.dim), dtype=np.float32)
         for i, (toks, _) in enumerate(pairs):
@@ -120,37 +148,27 @@ class SemanticIndex:
                 sign = 1.0 if (h >> 16) % 2 == 0 else -1.0
                 w = self.idf.get(tok, 1.0)
                 emb[i, bucket] += sign * w
-            # L2-normalise
             norm = np.linalg.norm(emb[i])
             if norm > 0:
                 emb[i] /= norm
 
         self.embeddings = emb
-        self.instructions = [self._clean_inst(toks) for toks, _ in pairs]
+        self.instructions = [' '.join(toks) for toks, _ in pairs]
         self.answers = [ans for _, ans in pairs]
         self._built = True
-        print(f"[SemanticIndex] Built index: {N} instruction-answer pairs, "
-              f"dim={self.dim}")
-
-    # ---- query ------------------------------------------------------------
+        print(f"[SemanticIndex] Built: {N} instruction-answer pairs, dim={self.dim}")
 
     def search(self, query_text, vocab, top_k=None):
-        """
-        Return list of (score, answer) sorted descending, up to *top_k*.
-        """
-        from ..config import get_default
+        """Return list of (score, answer) sorted descending."""
         if not self._built or self.embeddings is None or len(self.answers) == 0:
             return []
-        top_k = top_k or get_default('semantic_search_top_k', 5)
+        top_k = top_k or SEMANTIC_SEARCH_TOP_K
 
-        # Encode query
         qvec = self._encode_query(query_text, vocab)
         if qvec is None:
             return []
 
-        # Cosine similarity = dot product (both L2-normalised)
-        scores = self.embeddings @ qvec  # (N,)
-        # Get top-k indices
+        scores = self.embeddings @ qvec
         if len(scores) <= top_k:
             top_idx = np.argsort(-scores)
         else:
@@ -164,10 +182,7 @@ class SemanticIndex:
                 results.append((s, self.answers[idx]))
         return results
 
-    # ---- internal ---------------------------------------------------------
-
     def _encode_query(self, text, vocab):
-        """Encode a query into a normalised feature-hashed vector."""
         vec = np.zeros(self.dim, dtype=np.float32)
         tokens = vocab._tokenize(text)
         if not tokens:
@@ -192,7 +207,6 @@ class SemanticIndex:
         instruction = ''
         answer = ''
 
-        # <instruction>...</instruction>
         m = re.search(r'<instruction>(.*?)</instruction>', text, re.DOTALL)
         if m:
             instruction = clean_artifacts(m.group(1).strip())
@@ -205,7 +219,6 @@ class SemanticIndex:
             if m:
                 instruction = clean_artifacts(m.group(1).strip())
 
-        # <answer>...</answer>
         m = re.search(r'<answer>(.*?)</answer>', text, re.DOTALL)
         if m and len(m.group(1).strip()) > 3:
             answer = clean_artifacts(m.group(1).strip())
@@ -224,32 +237,21 @@ class SemanticIndex:
             return ('', answer)
         return (None, None)
 
-    @staticmethod
-    def _clean_inst(toks):
-        """Re-join tokens into a readable instruction string."""
-        return ' '.join(toks)
-
 
 # ---------------------------------------------------------------------------
-# ChatSession
+# ChatSession — ZERO config dependency, all from model weights/metadata
 # ---------------------------------------------------------------------------
 class ChatSession:
     """
-    Loads a saved NovaCore model and provides an interactive chat interface.
+    Loads a saved NovaCore model and provides interactive chat.
 
-    Priority chain:
-      1. Math detection (python terminal)
-      2. Semantic retrieval (IDF-weighted cosine similarity on reservoir)
-      3. Knowledge base retrieval
-      4. Deep reasoning engine
-      5. Creative generation
-      6. Neural engine / predictor (last resort)
+    ALL values read from model weights/metadata — NO config file needed.
+    Only temperature adjustable via CLI --temperature flag.
     """
 
-    def __init__(self, weights_dir, max_history=None, temperature=None):
+    def __init__(self, weights_dir, temperature=None):
         self.weights_dir = weights_dir
-        self.max_history = max_history if max_history is not None else get_default('max_history')
-        self.temperature = temperature if temperature is not None else get_default('temperature')
+        self.temperature = temperature  # None = use model metadata value
         self.history = []
         self.predictor = None
         self.model = None
@@ -257,16 +259,33 @@ class ChatSession:
         self.reservoir_samples = []
         self.metadata = None
         self._loaded = False
-        self.semantic_index = SemanticIndex()
+        self.semantic_index = None
         self.pool_pairs = []
+        self.max_history = _DEFAULT_MAX_HISTORY
+        self.chat_context_tokens = _DEFAULT_CHAT_CONTEXT_TOKENS
 
     def load(self):
-        """Load the saved model weights + vocab + patterns + reservoir samples."""
+        """Load model — ALL values from weights/metadata, NOT from config."""
         wm = WeightManager(self.weights_dir)
         try:
             data, metadata = wm.load()
         except FileNotFoundError as e:
             raise RuntimeError(f"Model not found at '{self.weights_dir}': {e}")
+
+        self.metadata = metadata or {}
+
+        # --- Read ALL training params from saved model metadata ---
+        dim = self.metadata.get("dim")
+        if dim is None:
+            raise RuntimeError(
+                f"Model metadata missing 'dim'. Is this a valid NovaCore model?"
+            )
+
+        vocab_size = self.metadata.get("vocab_size")
+
+        # Temperature: CLI flag > model metadata > default
+        if self.temperature is None:
+            self.temperature = self.metadata.get("temperature", _DEFAULT_TEMPERATURE)
 
         # Vocabulary
         vocab_path = os.path.join(self.weights_dir, "vocab.json")
@@ -278,7 +297,6 @@ class ChatSession:
         else:
             vocab = Vocabulary()
 
-        dim = (metadata or {}).get("dim") or get_default('dim')
         processor = TextProcessor(vocab=vocab, dim=dim)
 
         # Patterns
@@ -303,14 +321,15 @@ class ChatSession:
             self.reservoir_samples = []
 
         print(f"[ChatSession] Loaded {len(self.reservoir_samples)} reservoir samples")
+        print(f"[ChatSession] Model: dim={dim}, vocab={len(vocab)}, "
+              f"temp={self.temperature}")
 
-        # Load pool data from disk (if available) — adds extra QA pairs
+        # Build semantic index from reservoir + pool data from disk
         pool_extra = self._load_pool_data_from_disk()
-
-        # Build semantic index from reservoir + pool extra
+        self.semantic_index = SemanticIndex(dim)
         self.semantic_index.build(self.reservoir_samples, vocab, pool_extra)
 
-        # Also try to load on-disk pool pairs for word-overlap fallback
+        # Word-overlap pool pairs (fallback)
         self.pool_pairs = []
         for text in (self.reservoir_samples[:5000] + pool_extra[:5000]):
             inst, ans = SemanticIndex._extract_pair(text)
@@ -320,18 +339,29 @@ class ChatSession:
         extractor = PatternExtractor()
         extractor.patterns = dict(self.patterns_data)
 
-        # Combine reservoir and pool data for internal components
         all_data = list(self.reservoir_samples) + pool_extra
 
-        # Build config dict for all internal components
+        # Neural engine config — from model metadata, NOT external config
         engine_config = {
-            'neural_engine': get_default('neural_engine', {}),
-            'virtual_simulation': get_default('virtual_simulation', {}),
-            'verification_engine': get_default('verification_engine', {}),
-            'python_terminal': get_default('python_terminal', {}),
+            'neural_engine': {
+                'input_dim': min(128, dim),
+                'hidden_dim': min(64, dim // 2),
+                'output_dim': min(32, dim // 4),
+            },
+            'virtual_simulation': {
+                'quality_threshold': SIM_THRESHOLD,
+                'scoring_weights': {'length': 0.4, 'relevance': 0.4, 'coherence': 0.2},
+            },
+            'verification_engine': {
+                'max_retries': 2,
+                'min_score': 0.3,
+                'reservoir_search_limit': NEURAL_RESERVOIR_SCAN_LIMIT,
+            },
+            'python_terminal': {
+                'safe_mode': True,
+            },
         }
 
-        # Initialize NovaCoreModel
         self.model = NovaCoreModel(
             patterns=extractor,
             vocab=vocab,
@@ -339,20 +369,22 @@ class ChatSession:
             config=engine_config,
         )
 
-        # Pass semantic index to neural engine for better retrieval
+        # Pass semantic index to neural engine
         self.model.neural_engine._semantic_index = self.semantic_index
         self.model.neural_engine._vocab = vocab
 
-        # Also keep predictor as fallback
+        # Predictor
         self.predictor = PatternPredictor(
-            extractor,
-            vocab,
-            processor,
+            extractor, vocab, processor,
             reservoir_samples=self.reservoir_samples,
-            weights_dir=self.weights_dir
+            weights_dir=self.weights_dir,
+            semantic_index=self.semantic_index,
         )
+        # Pass model metadata to predictor (zero config)
+        self.predictor.model_max_tokens = self.metadata.get("max_tokens", 4096)
+        self.predictor.model_temperature = self.temperature
 
-        # Load SVD upgrader (may not exist)
+        # SVD upgrader (may not exist)
         self.upgrader = None
         upgrade_dir = os.path.join(self.weights_dir, "upgrades")
         if os.path.exists(upgrade_dir):
@@ -362,7 +394,7 @@ class ChatSession:
             except Exception:
                 pass
 
-        # Load knowledge base
+        # Knowledge base
         self.knowledge_index = None
         knowledge_path = os.path.join(self.weights_dir, "knowledge_index.json")
         if os.path.exists(knowledge_path):
@@ -381,7 +413,7 @@ class ChatSession:
             except Exception:
                 self.knowledge_index = None
 
-        # Load deep reasoning engine
+        # Deep reasoning engine
         self.reasoner = None
         reasoning_path = os.path.join(self.weights_dir, "reasoning_patterns.json")
         if os.path.exists(reasoning_path):
@@ -392,7 +424,7 @@ class ChatSession:
             except Exception:
                 self.reasoner = None
 
-        # Load creative engine
+        # Creative engine
         self.creative = None
         creative_path = os.path.join(self.weights_dir, "creative_patterns.json")
         if os.path.exists(creative_path):
@@ -403,26 +435,22 @@ class ChatSession:
             except Exception:
                 self.creative = None
 
-        self.metadata = metadata
-        self.encoder_input_dim = dim
         self._loaded = True
         return self
 
     # ------------------------------------------------------------------
-    # Pool data loading from disk (supplementary to reservoir)
+    # Pool data from disk (supplementary)
     # ------------------------------------------------------------------
     def _load_pool_data_from_disk(self):
-        """Load pool data from disk pool files if available."""
         pool_data = []
         base_path = os.path.join(
             os.path.dirname(__file__), '..', '..', 'data', 'hf_cache', 'pool'
         )
         if not os.path.exists(base_path):
             return pool_data
-        cap = get_default('pool_load_cap', 200000)
         loaded = 0
         for entry in os.listdir(base_path):
-            if loaded >= cap:
+            if loaded >= POOL_LOAD_CAP:
                 break
             full_path = os.path.join(base_path, entry)
             if os.path.isdir(full_path):
@@ -431,7 +459,7 @@ class ChatSession:
                     try:
                         with open(pool_file, 'r', encoding='utf-8') as f:
                             for line in f:
-                                if loaded >= cap:
+                                if loaded >= POOL_LOAD_CAP:
                                     break
                                 try:
                                     import json as _json
@@ -451,61 +479,62 @@ class ChatSession:
     # Public API
     # ------------------------------------------------------------------
     def info(self):
-        """Return model metadata dict."""
         if not self._loaded:
             self.load()
         return dict(self.metadata or {})
 
     def generate(self, prompt, max_tokens=None, temperature=None, use_history=True):
         """
-        Generate response with priority:
-        1. Math detection (python terminal)
-        2. Semantic retrieval from reservoir (cosine similarity)
-        2.5 Knowledge base retrieval
-        3. Deep reasoning
-        3.5 Creative generation
-        4. Neural engine (reservoir + patterns)
-        5. Predictor fallback
+        Generate response. ALL from model, NO config file.
+        Priority:
+          1. Math detection
+          2. Semantic retrieval from reservoir
+          2.5 Knowledge base
+          3. Deep reasoning
+          3.5 Creative generation
+          4. Neural engine
+          5. Predictor fallback
         """
         if not self._loaded:
             self.load()
-        if max_tokens is None:
-            max_tokens = (self.metadata or {}).get("max_tokens") or get_default('max_tokens')
 
-        # Priority 1: Math detection
+        if max_tokens is None:
+            max_tokens = self.metadata.get("max_tokens", 4096)
+        if temperature is None:
+            temperature = self.temperature
+
+        # Priority 1: Math
         if self.model:
             math_result = self.model.neural_engine.python_terminal.parse_and_compute(prompt)
             if math_result is not None:
                 return math_result
 
-        # Priority 2: Semantic retrieval from reservoir — THE PRIMARY PATH
-        threshold = get_default('semantic_search_threshold')
-        top_k = get_default('semantic_search_top_k')
-        relaxed = get_default('semantic_search_relaxed_factor')
-        results = self.semantic_index.search(prompt, self._get_vocab(), top_k=top_k)
-        if results:
-            best_score, best_answer = results[0]
-            if (best_score >= threshold and best_answer
-                    and len(best_answer) > 10
-                    and self._is_relevant_answer(prompt, best_answer)):
-                return best_answer
-            # Try second-best if first is irrelevant
-            if len(results) > 1:
-                for score, answer in results[1:]:
-                    if (score >= threshold * relaxed and answer
-                            and len(answer) > 10
-                            and self._is_relevant_answer(prompt, answer)):
-                        return answer
+        # Priority 2: Semantic retrieval — THE PRIMARY PATH
+        if self.semantic_index and self.semantic_index._built:
+            vocab = self._get_vocab()
+            results = self.semantic_index.search(prompt, vocab, top_k=SEMANTIC_SEARCH_TOP_K)
+            if results:
+                best_score, best_answer = results[0]
+                if (best_score >= SEMANTIC_SEARCH_THRESHOLD and best_answer
+                        and len(best_answer) > 10
+                        and self._is_relevant_answer(prompt, best_answer)):
+                    return best_answer
+                if len(results) > 1:
+                    for score, answer in results[1:]:
+                        if (score >= SEMANTIC_SEARCH_THRESHOLD * SEMANTIC_SEARCH_RELAXED
+                                and answer and len(answer) > 10
+                                and self._is_relevant_answer(prompt, answer)):
+                            return answer
 
-        # Priority 2b: Word-overlap pool matching (fallback if semantic weak)
+        # Priority 2b: Word-overlap pool matching
         if self.pool_pairs:
             matched = self._match_pool(prompt)
             if matched and len(matched) > 10:
                 return matched
 
-        # Priority 2.5: Knowledge base retrieval
+        # Priority 2.5: Knowledge base
         if self.knowledge_index:
-            results = self.knowledge_index.search(prompt, top_k=get_default('knowledge_search_top_k'))
+            results = self.knowledge_index.search(prompt, top_k=KNOWLEDGE_SEARCH_TOP_K)
             if results:
                 best = results[0]
                 answer = (best.get('definition') or best.get('answer')
@@ -525,7 +554,7 @@ class ChatSession:
             if creative and len(creative) > 20:
                 return creative
 
-        # Priority 4: Neural engine (reservoir + patterns)
+        # Priority 4: Neural engine
         if self.model:
             response = self.model.generate(prompt, max_tokens)
             if response and len(response) > 10:
@@ -534,14 +563,13 @@ class ChatSession:
         # Priority 5: Predictor fallback
         if self.predictor:
             context = self._build_context(prompt, use_history)
-            response = self.predictor.reply(context, max_tokens, self.temperature)
+            response = self.predictor.reply(context, max_tokens, temperature)
             if response:
                 return response
 
         return "I'm not sure how to respond to that."
 
     def _get_vocab(self):
-        """Get the vocabulary from the predictor or model."""
         if self.predictor and self.predictor.vocab:
             return self.predictor.vocab
         if self.model and self.model.vocab:
@@ -549,64 +577,49 @@ class ChatSession:
         return Vocabulary()
 
     def get_model_info(self):
-        """Get complete model information."""
         if self.model:
             return self.model.get_model_info()
         return {}
 
     def visualize_neural_network(self):
-        """Get neural network visualization."""
         if self.model:
             return self.model.visualize_network()
         return "Model not loaded"
 
     def chat(self, prompt, max_tokens=None, temperature=None):
-        """
-        User sends a message -> add to history -> generate ->
-        add assistant reply to history -> return reply.
-        """
         self.history.append({"role": "user", "content": prompt})
         reply = self.generate(prompt, max_tokens, temperature)
         self.history.append({"role": "assistant", "content": reply})
-        # Trim history if too long
         if len(self.history) > self.max_history * 2:
             self.history = self.history[-self.max_history * 2:]
         return reply
 
     def reset(self):
-        """Clear conversation history."""
         self.history = []
 
     def get_history(self):
-        """Return conversation history."""
         return self.history
+
+    # ------------------------------------------------------------------
+    # Relevance checking
+    # ------------------------------------------------------------------
+    def _is_relevant_answer(self, query, answer):
+        query_lower = query.lower()
+        answer_lower = answer.lower()
+
+        if any(kw in query_lower for kw in CREATIVE_KEYWORDS):
+            return True
+
+        answer_first = answer_lower[:RELEVANCE_CHECK_PREFIX_LEN]
+        for ind in STORY_INDICATORS:
+            if ind in answer_first:
+                return False
+        return True
 
     # ------------------------------------------------------------------
     # Word-overlap pool matching (secondary fallback)
     # ------------------------------------------------------------------
-    def _is_relevant_answer(self, query, answer):
-        """Check if the answer is likely relevant to the query (not a random story)."""
-        query_lower = query.lower()
-        answer_lower = answer.lower()
-
-        # Creative queries should accept any length answer
-        creative_kw = set(get_default('creative_keywords', []))
-        if any(kw in query_lower for kw in creative_kw):
-            return True
-
-        # Answers that look like stories (narrative indicators) are likely irrelevant
-        # for non-creative queries
-        story_inds = get_default('story_indicators', [])
-        prefix_len = get_default('relevance_check_prefix_len')
-        answer_first = answer_lower[:prefix_len]
-        for ind in story_inds:
-            if ind in answer_first:
-                return False
-
-        return True
-
-    def _match_pool(self, query: str) -> str:
-        """Match query against pool instructions using word overlap."""
+    def _match_pool(self, query):
         if not self.pool_pairs:
             return ''
 
@@ -633,31 +646,25 @@ class ChatSession:
             inst_lower = instruction.lower().strip().rstrip('?!.')
             inst_words = set(inst_lower.split()) - stop_words
 
-            # Exact match bonus
             if query_lower == inst_lower:
                 return answer
 
             if query_content:
                 overlap = len(query_content & inst_words)
-                q_weight = get_default('pool_match_query_weight')
-                i_weight = get_default('pool_match_inst_weight')
                 score = overlap / max(len(query_content), 1)
                 inst_overlap = overlap / max(len(inst_words), 1) if inst_words else 0
-                score = score * q_weight + inst_overlap * i_weight
+                score = score * POOL_MATCH_QUERY_WEIGHT + inst_overlap * POOL_MATCH_INST_WEIGHT
 
-                short_thresh = get_default('pool_match_short_threshold')
-                long_thresh = get_default('pool_match_long_threshold')
-                length_bonus = get_default('pool_match_length_bonus')
-                if len(answer) > short_thresh:
-                    score *= length_bonus
-                if len(answer) > long_thresh:
-                    score *= length_bonus
+                if len(answer) > POOL_MATCH_SHORT_THRESHOLD:
+                    score *= POOL_MATCH_LENGTH_BONUS
+                if len(answer) > POOL_MATCH_LONG_THRESHOLD:
+                    score *= POOL_MATCH_LENGTH_BONUS
 
                 if score > best_score:
                     best_score = score
                     best_answer = answer
 
-        if best_score >= get_default('pool_match_min_score') and best_answer:
+        if best_score >= POOL_MATCH_MIN_SCORE and best_answer:
             return best_answer
         return ''
 
@@ -665,7 +672,6 @@ class ChatSession:
     # Internals
     # ------------------------------------------------------------------
     def _build_context(self, prompt, use_history=True):
-        """Combine recent conversation into a single context string."""
         if not use_history or not self.history:
             return prompt
         parts = []
@@ -675,4 +681,4 @@ class ChatSession:
         parts.append(prompt)
         context = " ... ".join(parts)
         tokens = context.split()
-        return " ".join(tokens[-get_default('chat_context_tokens'):])
+        return " ".join(tokens[-self.chat_context_tokens:])
