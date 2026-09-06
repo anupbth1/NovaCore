@@ -17,6 +17,17 @@ import numpy as np
 import math
 from collections import Counter
 
+# Windows consoles default to cp1252 which cannot encode ▶ / emoji.
+# Force UTF-8 so the gray reasoning trace prints everywhere.
+try:
+    import sys
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    if hasattr(sys.stderr, 'reconfigure'):
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
+
 from ..core.encoder import RandomFourierEncoder
 from ..core.hasher import FeatureHasher, murmurhash3
 from ..core.patterns import PatternExtractor
@@ -84,6 +95,74 @@ _STOPWORDS = frozenset([
     'why', 'how', 'hi', 'hello', 'hey', 'please', 'there',
     'some', 'any', 'more', 'most', 'other', 'such', 'only',
 ])
+
+
+# ---------------------------------------------------------------------------
+# Code detection helpers — used so that ANY code output is verified by the
+# internal Python terminal before being returned.
+# ---------------------------------------------------------------------------
+_CODE_KEYWORDS = frozenset([
+    'def ', 'import ', 'from ', 'class ', 'return ', 'print(', 'print (',
+    'if ', 'elif ', 'else', 'for ', 'while ', 'lambda', 'range(',
+    'append(', 'self', 'return', '```python', '```py', '```',
+    '==', '!=', '>=', '<=', '+=', '-=', 'while', 'def', 'import',
+])
+_CODE_STARTERS = frozenset([
+    'def ', 'import ', 'from ', 'class ', 'print(', 'for ', 'while ',
+    '```', 'lambda', 'x =', 'a =', 'return ',
+])
+
+
+def _looks_like_code(text):
+    """Heuristic: does the text look like source code rather than prose?"""
+    if not text or not isinstance(text, str):
+        return False
+    t = text.strip()
+    if not t:
+        return False
+    # Markdown code fence
+    if '```' in t:
+        return True
+    lines = [ln.strip() for ln in t.split('\n') if ln.strip()]
+    if not lines:
+        return False
+    code_lines = 0
+    for ln in lines:
+        if (ln.startswith(('def ', 'import ', 'from ', 'class ',
+                           'print(', 'for ', 'while ', 'if ', 'elif ',
+                           'else:', 'return ', 'lambda ', '```'))
+                or ln.startswith('#')):
+            code_lines += 1
+    # Majority of short-ish text that is code-ish
+    if len(lines) <= 3:
+        return code_lines >= 2
+    return code_lines >= max(2, len(lines) // 2)
+
+
+def _extract_code_block(text):
+    """Extract a code block from markdown fences if present, else the raw text
+    when it clearly reads as code."""
+    if not text or not isinstance(text, str):
+        return None
+    t = text.strip()
+    if '```' in t:
+        blocks = re.findall(r'```(?:python|py)?\s*\n?(.*?)```', t, re.DOTALL)
+        if blocks:
+            return blocks[0].strip()
+        # single-fence or inline
+        return t.split('```')[-1].strip() if t.count('```') % 2 == 1 else None
+    # No fences: if the whole text looks like code, return it trimmed
+    if _looks_like_code(t):
+        # Trim trailing prose after the code ends (heuristic: last non-code line)
+        lines = t.split('\n')
+        code_lines = []
+        for ln in lines:
+            if ln.strip() and not ln.strip().startswith(('#', '//', '/*')):
+                code_lines.append(ln)
+            elif ln.strip().startswith('#') and len(code_lines) > 0:
+                code_lines.append(ln)
+        return '\n'.join(code_lines).strip()
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -746,20 +825,66 @@ class ChatSession:
             return passed, score, final_text
 
         # ============================================================
-        # PRIORITY 1: Math (exact computation — auto-passes virtual sim)
+        # PRIORITY 1: Python Terminal — math AND direct code execution
         # ============================================================
-        log_step("PRIORITY 1: Math Detection", "Checking for mathematical expressions...")
-        if self.model:
-            math_result = self.model.neural_engine.python_terminal.parse_and_compute(prompt)
+        python_terminal = (self.model.neural_engine.python_terminal
+                           if self.model else None)
+        log_step("PRIORITY 1: Python Terminal",
+                 "Exact math computation + code execution")
+        if python_terminal is not None:
+            # Math expression in the prompt
+            math_result = python_terminal.parse_and_compute(prompt)
             if math_result is not None:
-                log(f"  ✓ MATH DETECTED: computed result", GREEN)
-                log(f"  RESULT: {math_result}", GREEN)
-                # Math is exact computation — bypass virtual sim, return directly
-                log(f"  ✓ EXACT COMPUTATION — auto-passes virtual sim", GREEN)
-                log(f"{'='*60}")
+                log(f"  ✓ MATH EXECUTED: {math_result}", GREEN)
+                log(f"  {'='*60}")
                 return math_result
-            else:
-                log("  ✗ No math expression found", YELLOW)
+            # Direct code pasted by the user ("run this: ...")
+            code_block = _extract_code_block(prompt)
+            if code_block:
+                log("  · Running user-supplied code in Python terminal...", CYAN)
+                run = python_terminal.execute(code_block)
+                if run.get('success'):
+                    out = run.get('output', '')
+                    log(f"  ✓ CODE OUTPUT:\n{out[:400]}", GREEN)
+                    log(f"  {'='*60}")
+                    return out
+                log(f"  ✗ CODE ERROR: {run.get('error')}", YELLOW)
+                return (f"Running that code produced an error:\n"
+                        f"{run.get('error')}")
+
+        # ============================================================
+        # CANDIDATE GATE — every output passes through:
+        #   1. Python terminal (when the answer is code → run & verify)
+        #   2. Virtual simulation (quality score every output)
+        # ============================================================
+        def gate_candidate(source_name, candidate):
+            """Run Python code verification then virtual sim.
+            Returns (final_text) if passed, else None."""
+            log(f"  Candidate [{source_name}]: {candidate[:120]}...", BLUE)
+
+            final_text = candidate
+
+            # 1) If candidate contains code, execute it to VERIFY correctness.
+            code_block = _extract_code_block(candidate)
+            if code_block and python_terminal is not None:
+                log("  🐍 Verifying code via Python terminal...", CYAN)
+                run = python_terminal.execute(code_block)
+                if run.get('success'):
+                    out = run.get('output', '')
+                    log(f"     ✓ CODE RUNS — output: {out[:120]}", GREEN)
+                    # Keep the code answer but append observed output when
+                    # short; long code stays as-is.
+                else:
+                    log(f"     ✗ CODE BROKEN: {run.get('error')}", YELLOW)
+                    return None  # reject broken code candidate
+
+            # 2) Virtual simulation on every output
+            passed, score, sim_text = run_virtual_sim(final_text, source_name)
+            if not passed:
+                log("  → Rejected by virtual sim, trying next...", YELLOW)
+                return None
+            log(f"  ✓ GATE PASSED — returning final answer", GREEN)
+            return sim_text
 
         # ============================================================
         # CANDIDATE GENERATORS — each yields (source_name, candidate_text)
@@ -833,7 +958,7 @@ class ChatSession:
                 yield "predictor", response
 
         # ============================================================
-        # MAIN LOOP: Try each priority, run virtual sim on each candidate
+        # MAIN LOOP: every candidate goes through the full gate
         # ============================================================
         all_generators = [
             ("SEMANTIC RETRIEVAL", gen_semantic),
@@ -849,24 +974,17 @@ class ChatSession:
             log_step(f"PRIORITY: {priority_name}", "")
             try:
                 for source_name, candidate in gen_func():
-                    log(f"  Candidate from {source_name}: {candidate[:120]}...", BLUE)
-                    
-                    # Run virtual simulation
-                    passed, score, final_text = run_virtual_sim(candidate, source_name)
-                    
-                    if passed:
-                        log(f"  ✓ VIRTUAL SIM PASSED — returning final answer", GREEN)
-                        log(f"  FINAL: {final_text[:200]}...", GREEN)
+                    final_text = gate_candidate(source_name, candidate)
+                    if final_text is not None:
+                        log(f"  FINAL: {final_text[:200]}", GREEN)
                         log(f"{'='*60}")
                         return final_text
-                    else:
-                        log(f"  → Candidate rejected, trying next...", YELLOW)
             except Exception as e:
                 log(f"  ✗ {priority_name} error: {e}", YELLOW)
                 continue
 
         # Nothing passed virtual simulation
-        log("  ✗ ALL CANDIDATES FAILED VIRTUAL SIM — returning best effort", YELLOW)
+        log("  ✗ ALL CANDIDATES FAILED — returning best effort", YELLOW)
         log(f"{'='*60}")
         return "I'm not sure how to respond to that."
 

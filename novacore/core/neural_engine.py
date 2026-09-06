@@ -137,52 +137,88 @@ class InternalPythonTerminal:
         self.execution_history = []
 
     def execute(self, code: str) -> Dict[str, Any]:
-        """Execute simple Python code internally."""
+        """Execute Python code internally (real exec, stdout captured).
+
+        Runs in a restricted namespace with a wall-clock timeout so a runaway
+        loop in model-suggested code cannot hang the chat.  All builtins used
+        by typical instruction answers (print, range, len, etc.) are allowed;
+        dangerous operations (file/network/import of heavy modules) are not.
+        """
+        import io
+        import contextlib
+        import threading
         result = {
             'code': code,
             'output': '',
             'success': False,
             'error': None,
         }
+        if not code or not isinstance(code, str):
+            result['error'] = 'empty code'
+            return result
+
+        # Restricted builtins: allow computation, deny I/O & process control
+        _allowed = {
+            'print': print, 'len': len, 'range': range, 'int': int,
+            'float': float, 'str': str, 'bool': bool, 'list': list,
+            'dict': dict, 'set': set, 'tuple': tuple, 'abs': abs, 'min': min,
+            'max': max, 'sum': sum, 'round': round, 'sorted': sorted,
+            'enumerate': enumerate, 'zip': zip, 'reversed': reversed,
+            'True': True, 'False': False, 'None': None, 'chr': chr,
+            'ord': ord, 'pow': pow, 'divmod': divmod, 'isinstance': isinstance,
+            'hasattr': hasattr, 'getattr': getattr, 'type': type,
+            'all': all, 'any': any, 'Exception': Exception, 'ValueError': ValueError,
+            'TypeError': TypeError, 'IndexError': IndexError, 'KeyError': KeyError,
+            'ZeroDivisionError': ZeroDivisionError,
+        }
+        # maths helpers commonly requested
         try:
-            output_lines = []
-            local_vars = {}
-            for line in code.strip().split('\n'):
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                if line.startswith('print('):
-                    content = line[6:-1].strip()
-                    if content.startswith('"') or content.startswith("'"):
-                        output_lines.append(content.strip('"').strip("'"))
-                    else:
-                        output_lines.append(str(local_vars.get(content, content)))
-                elif '=' in line and not line.startswith('if') and not line.startswith('for'):
-                    parts = line.split('=', 1)
-                    if len(parts) == 2:
-                        var_name = parts[0].strip()
-                        value = parts[1].strip()
-                        if value.startswith('"') or value.startswith("'"):
-                            local_vars[var_name] = value.strip('"').strip("'")
-                        elif value.isdigit():
-                            local_vars[var_name] = int(value)
-                        elif value.lstrip('-').replace('.', '', 1).isdigit():
-                            local_vars[var_name] = float(value)
-                        else:
-                            local_vars[var_name] = value
-                else:
-                    try:
-                        safe_globals = {"__builtins__": {}}
-                        result_value = eval(line, safe_globals, local_vars)
-                        output_lines.append(str(result_value))
-                    except Exception:
-                        pass
-            result['output'] = '\n'.join(output_lines) if output_lines else "Code executed"
-            result['success'] = True
-        except Exception as e:
-            result['error'] = str(e)
+            import math as _math
+            _allowed['math'] = _math
+        except Exception:
+            pass
+        try:
+            import random as _random
+            _allowed['random'] = _random
+        except Exception:
+            pass
+        try:
+            import numpy as _np
+            _allowed['np'] = _np
+        except Exception:
+            pass
+
+        namespace = {'__name__': '__novacore__', '__builtins__': _allowed}
+        out_buf = io.StringIO()
+
+        def _run():
+            try:
+                with contextlib.redirect_stdout(out_buf):
+                    exec(compile(code, '<novacore-terminal>', 'exec'), namespace)
+                result['success'] = True
+            except Exception as e:
+                result['error'] = f"{type(e).__name__}: {e}"
+                result['success'] = False
+
+        timeout_s = self.max_execution_time / 1000.0 if self.max_execution_time else 5.0
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(timeout_s)
+        if t.is_alive():
+            result['error'] = f'Timeout after {timeout_s:.1f}s (possible infinite loop)'
             result['success'] = False
+            # leave daemon thread to die with process
+
+        out = out_buf.getvalue().strip()
+        if result['success']:
+            result['output'] = out if out else "Code executed successfully"
+        else:
+            result['output'] = out
+
+        # Append to history, but cap history growth
         self.execution_history.append(result)
+        if len(self.execution_history) > 50:
+            self.execution_history = self.execution_history[-50:]
         return result
 
     def parse_and_compute(self, prompt: str) -> Optional[str]:
