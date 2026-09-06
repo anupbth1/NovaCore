@@ -442,37 +442,84 @@ class ChatSession:
     # Pool data from disk (supplementary)
     # ------------------------------------------------------------------
     def _load_pool_data_from_disk(self):
+        """Load pool QA data from disk (*_stream.jsonl flat files AND pool.jsonl
+        subdirectories).  Produced during training by the streaming pipeline.
+
+        Strategy (RAM-bounded + fast):
+          - Collect all candidate files
+          - Pre-check each file: if its first lines contain no QA structure
+            (e.g. the ~2GB TinyStories story file), skip it entirely
+          - Process smaller QA files first; stop once the cap is reached
+        """
         pool_data = []
         base_path = os.path.join(
             os.path.dirname(__file__), '..', '..', 'data', 'hf_cache', 'pool'
         )
         if not os.path.exists(base_path):
             return pool_data
+
+        candidate_files = []
+        try:
+            for entry in os.listdir(base_path):
+                full = os.path.join(base_path, entry)
+                if os.path.isfile(full) and entry.endswith('_stream.jsonl'):
+                    candidate_files.append(full)
+                elif os.path.isdir(full):
+                    pf = os.path.join(full, 'pool.jsonl')
+                    if os.path.exists(pf):
+                        candidate_files.append(pf)
+        except Exception:
+            return pool_data
+
+        if not candidate_files:
+            return pool_data
+
+        # QA markers shared by every instruction-style pool file
+        qa_markers = ('<instruction>', '<answer>', '<assistant>',
+                      '<user>', '### Instruction:')
+
+        def file_has_qa(path):
+            """Peek the first lines: skip files without QA structure (e.g.
+            raw TinyStories story text) so we never scan GBs pointlessly."""
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    for _ in range(20):
+                        line = f.readline()
+                        if not line:
+                            break
+                        if any(m in line for m in qa_markers):
+                            return True
+            except Exception:
+                return False
+            return False
+
+        # Pre-check: only keep files that look like QA pools
+        candidate_files = [p for p in candidate_files if file_has_qa(p)]
+
+        # Smaller files first (QA pools are tens of MB; stories can be GBs)
+        candidate_files.sort(key=lambda p: os.path.getsize(p) if os.path.exists(p) else 0)
+
         loaded = 0
-        for entry in os.listdir(base_path):
+        for pool_file in candidate_files:
             if loaded >= POOL_LOAD_CAP:
                 break
-            full_path = os.path.join(base_path, entry)
-            if os.path.isdir(full_path):
-                pool_file = os.path.join(full_path, 'pool.jsonl')
-                if os.path.exists(pool_file):
-                    try:
-                        with open(pool_file, 'r', encoding='utf-8') as f:
-                            for line in f:
-                                if loaded >= POOL_LOAD_CAP:
-                                    break
-                                try:
-                                    import json as _json
-                                    d = _json.loads(line.strip())
-                                    text = d.get('text', '')
-                                    if text:
-                                        pool_data.append(text)
-                                        loaded += 1
-                                except Exception:
-                                    continue
-                    except Exception:
-                        pass
-        print(f"[ChatSession] Loaded {len(pool_data)} pool entries from disk")
+            try:
+                with open(pool_file, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        if loaded >= POOL_LOAD_CAP:
+                            break
+                        try:
+                            import json as _json
+                            d = _json.loads(line.strip())
+                            text = d.get('text', '')
+                            if text and any(m in text for m in qa_markers):
+                                pool_data.append(text)
+                                loaded += 1
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+        print(f"[ChatSession] Loaded {len(pool_data)} QA pool entries from disk")
         return pool_data
 
     # ------------------------------------------------------------------
