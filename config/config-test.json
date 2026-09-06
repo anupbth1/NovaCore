@@ -14,6 +14,7 @@
     "reservoir_seed": 42,
     "reservoir_sample_size": 100000,
     "reservoir_merge_multiplier": 2,
+    "qa_bank_cap": 100000,
     "pattern_vocab_cap": 200000,
     "pattern_sample_cap": 500000,
     "analytic_target_dim": 2048,

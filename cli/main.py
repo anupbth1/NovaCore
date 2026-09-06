@@ -1302,6 +1302,7 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
     from tqdm import tqdm
     import pickle
     import gc
+    import re
 
     log = Logger()
 
@@ -1368,6 +1369,20 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
         extractor.patterns = dict(prev_extractor.patterns)
     sampler = ReservoirSampler(k=min(_res_k * _res_mult, (_res_k * 4) + _res_k))
 
+    # QA bank: instruction/answer pairs extracted from the stream, saved INTO
+    # the model weights so chat is fully self-contained (never reads external
+    # pool files at runtime).  Capped to keep RAM bounded.
+    _qa_cap = min(_gd('qa_bank_cap', 100000), tuner.reservoir_size * 2)
+    qa_sampler = ReservoirSampler(k=_qa_cap)
+    _qa_pattern = re.compile(
+        r'<instruction>(.*?)</instruction>.*?<answer>(.*?)</answer>',
+        re.DOTALL,
+    )
+    _qa_pattern2 = re.compile(
+        r'<user>(.*?)</user>.*?<assistant>(.*?)</assistant>',
+        re.DOTALL,
+    )
+
     # --- Single pass: vocab + patterns + reservoir + knowledge ---------------
     print()
     print(log.header(f" ENCODING (streaming) -> {os.path.basename(out_dir) or out_dir} "))
@@ -1404,6 +1419,13 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
             knowledge_extractor.learn_from_document(text, f"doc_{count}")
         # Reservoir: feed ALL texts
         sampler.add(text)
+        # QA bank: extract instruction/answer pairs for self-contained chat
+        if qa_sampler and count % 2 == 0:
+            m = _qa_pattern.search(text)
+            if not m:
+                m = _qa_pattern2.search(text)
+            if m and len(m.group(1).strip()) > 3 and len(m.group(2).strip()) > 3:
+                qa_sampler.add(f"<instruction>{m.group(1).strip()}</instruction>\n<answer>{m.group(2).strip()}</answer>")
         count += 1
         if count % 200000 == 0:
             el = _time() - _t0
@@ -1590,6 +1612,14 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
     if reservoir_data:
         reservoir_bytes = pickle.dumps(reservoir_data)
         arrays["reservoir_sample"] = np.frombuffer(reservoir_bytes, dtype=np.uint8)
+
+    # Save QA bank (self-contained chat — no external pool at runtime)
+    if qa_sampler is not None:
+        qa_data = list(qa_sampler.sample())
+        if qa_data:
+            qa_bytes = pickle.dumps(qa_data)
+            arrays["qa_bank"] = np.frombuffer(qa_bytes, dtype=np.uint8)
+            log.ok(f"QA bank baked into model: {len(qa_data)} pairs")
 
     metadata = {
         "name": os.path.basename(out_dir),

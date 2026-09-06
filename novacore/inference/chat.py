@@ -376,18 +376,31 @@ class ChatSession:
         else:
             self.reservoir_samples = []
 
-        print(f"[ChatSession] Loaded {len(self.reservoir_samples)} reservoir samples")
+        # QA bank — instruction/answer pairs BAKED INTO THE MODEL WEIGHTS at
+        # training time.  This makes chat fully self-contained: the model never
+        # reads external pool files during inference.
+        qa_bank = []
+        if "qa_bank" in data.files:
+            try:
+                raw_qa = data["qa_bank"].tobytes()
+                if raw_qa:
+                    qa_bank = pickle.loads(raw_qa)
+            except Exception as e:
+                print(f"[WARN] Could not load qa_bank: {e}")
+
+        print(f"[ChatSession] Loaded {len(self.reservoir_samples)} reservoir samples, "
+              f"{len(qa_bank)} QA pairs baked in weights")
         print(f"[ChatSession] Model: dim={dim}, vocab={len(vocab)}, "
               f"temp={self.temperature}")
 
-        # Build semantic index from reservoir + pool data from disk
-        pool_extra = self._load_pool_data_from_disk()
+        # Semantic index from model-internal data ONLY (reservoir + qa_bank).
+        # No external pool files — the model is self-contained.
         self.semantic_index = SemanticIndex(dim)
-        self.semantic_index.build(self.reservoir_samples, vocab, pool_extra)
+        self.semantic_index.build(qa_bank, vocab, self.reservoir_samples)
 
-        # Word-overlap pool pairs (fallback)
+        # Word-overlap pool pairs (fallback, model-internal only)
         self.pool_pairs = []
-        for text in (self.reservoir_samples[:5000] + pool_extra[:5000]):
+        for text in (self.reservoir_samples[:5000] + qa_bank[:5000]):
             inst, ans = SemanticIndex._extract_pair(text)
             if inst and ans:
                 self.pool_pairs.append((inst, ans))
@@ -395,7 +408,7 @@ class ChatSession:
         extractor = PatternExtractor()
         extractor.patterns = dict(self.patterns_data)
 
-        all_data = list(self.reservoir_samples) + pool_extra
+        all_data = list(self.reservoir_samples) + qa_bank
 
         # Neural engine config — from model metadata, NOT external config
         engine_config = {
@@ -577,6 +590,74 @@ class ChatSession:
                 continue
         print(f"[ChatSession] Loaded {len(pool_data)} QA pool entries from disk")
         return pool_data
+
+    # ------------------------------------------------------------------
+    # BAKING: read external pool files ONCE and bake QA pairs INTO weights.
+    # After this, chat never needs the external pool again — fully
+    # self-contained model (like a transformer weights file).
+    # ------------------------------------------------------------------
+    def bake_qa_bank(self, base_pool_dir=None, cap=None):
+        """
+        Read *_stream.jsonl pool files (created during training), extract the
+        instruction/answer pairs, and store them INSIDE weights.ncw as the
+        'qa_bank' array.  This is a one-time migration step so that inference
+        reads ONLY from the model directory.
+        """
+        import json as _json
+        cap = cap or POOL_LOAD_CAP
+        base = base_pool_dir or os.path.join(
+            os.path.dirname(__file__), '..', '..', 'data', 'hf_cache', 'pool'
+        )
+        if not os.path.exists(base):
+            print("[Bake] No pool dir found:", base)
+            return 0
+
+        texts = []
+        for entry in sorted(os.listdir(base)):
+            full = os.path.join(base, entry)
+            if os.path.isfile(full) and entry.endswith('_stream.jsonl'):
+                with open(full, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        if len(texts) >= cap:
+                            break
+                        try:
+                            d = _json.loads(line.strip())
+                            t = d.get('text', '')
+                            if t and ('<instruction>' in t or '<answer>' in t
+                                      or '<assistant>' in t or '<user>' in t):
+                                texts.append(t)
+                        except Exception:
+                            continue
+            elif os.path.isdir(full):
+                pf = os.path.join(full, 'pool.jsonl')
+                if os.path.exists(pf):
+                    with open(pf, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            if len(texts) >= cap:
+                                break
+                            try:
+                                d = _json.loads(line.strip())
+                                t = d.get('text', '')
+                                if t:
+                                    texts.append(t)
+                            except Exception:
+                                continue
+            if len(texts) >= cap:
+                break
+
+        # Re-save weights with qa_bank embedded
+        wm = WeightManager(self.weights_dir)
+        data, metadata = wm.load()
+        arrays = {}
+        for k in data.files:
+            try:
+                arrays[k] = np.array(data[k])
+            except Exception:
+                pass
+        arrays["qa_bank"] = np.frombuffer(pickle.dumps(texts), dtype=np.uint8)
+        wm.save(arrays, metadata)
+        print(f"[Bake] Baked {len(texts)} QA entries into {self.weights_dir}/weights.ncw")
+        return len(texts)
 
     # ------------------------------------------------------------------
     # Public API
