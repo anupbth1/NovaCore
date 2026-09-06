@@ -859,7 +859,9 @@ class ChatSession:
         # ============================================================
         def gate_candidate(source_name, candidate):
             """Run Python code verification then virtual sim.
-            Returns (final_text) if passed, else None."""
+            Returns (final_text) if passed, else None.
+            Tracks the highest virtual-sim-scoring candidate as best effort."""
+            nonlocal best_effort, best_effort_score
             log(f"  Candidate [{source_name}]: {candidate[:120]}...", BLUE)
 
             final_text = candidate
@@ -880,6 +882,9 @@ class ChatSession:
 
             # 2) Virtual simulation on every output
             passed, score, sim_text = run_virtual_sim(final_text, source_name)
+            if score > best_effort_score and sim_text and len(sim_text) > 3:
+                best_effort_score = score
+                best_effort = sim_text
             if not passed:
                 log("  → Rejected by virtual sim, trying next...", YELLOW)
                 return None
@@ -970,6 +975,9 @@ class ChatSession:
             ("PREDICTOR FALLBACK", gen_predictor),
         ]
 
+        best_effort = None   # (score, text) highest-scoring candidate seen
+        best_effort_score = 0.0
+
         for priority_name, gen_func in all_generators:
             log_step(f"PRIORITY: {priority_name}", "")
             try:
@@ -983,10 +991,19 @@ class ChatSession:
                 log(f"  ✗ {priority_name} error: {e}", YELLOW)
                 continue
 
-        # Nothing passed virtual simulation
-        log("  ✗ ALL CANDIDATES FAILED — returning best effort", YELLOW)
+        # ============================================================
+        # NOTHING PASSED THE FULL GATE.
+        # Fall back to the highest-scoring candidate (real model data,
+        # never a hardcoded string).
+        # ============================================================
+        log("  ✗ ALL CANDIDATES FAILED GATE — returning highest-scoring "
+            "candidate from the model", YELLOW)
         log(f"{'='*60}")
-        return "I'm not sure how to respond to that."
+        if best_effort is not None:
+            return best_effort
+        # Very last resort: reuse the user's own words is NOT intelligence;
+        # if the model has genuinely nothing, say so plainly in model data.
+        return ""
 
     def _get_vocab(self):
         if self.predictor and self.predictor.vocab:

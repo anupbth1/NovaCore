@@ -8,9 +8,9 @@
 
   "default_filter": {
     "enabled": true,
-    "cleaning": { "remove_deleted": true, "remove_empty_text": true, "min_text_length": 10 },
+    "cleaning": { "remove_deleted": false, "remove_empty_text": false, "min_text_length": 0 },
     "quality": { "language": ["en", "hi"] },
-    "dedup": { "exact_text_dedup": true, "near_dedup": true, "near_dedup_threshold": 0.85 },
+    "dedup": { "exact_text_dedup": false, "near_dedup": false, "near_dedup_threshold": 0.85 },
     "conversation": { "reconstruct_threads": false, "min_thread_length": 1, "keep_only_roots": false }
   },
 

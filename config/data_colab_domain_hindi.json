@@ -11,7 +11,7 @@
     "cleaning": {
       "remove_deleted": true,
       "remove_empty_text": true,
-      "min_text_length": 10
+      "min_text_length": 0
     },
     "quality": {
       "language": ["hi", "en"]
@@ -38,7 +38,7 @@
       "absorb": false,
       "filter": {
         "enabled": true,
-        "cleaning": { "remove_deleted": true, "remove_empty_text": true, "min_text_length": 10 },
+        "cleaning": { "remove_deleted": true, "remove_empty_text": true, "min_text_length": 0 },
         "quality": {
           "language": ["hi", "en"],
           "max_rank": 5,

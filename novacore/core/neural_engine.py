@@ -229,18 +229,21 @@ class InternalPythonTerminal:
         """
         p = prompt.lower().strip()
 
-        # Detect math-related queries
+        # Detect math-related queries (or a bare numeric expression)
         math_keywords = ['calculate', 'compute', 'what is', 'what\'s',
                          'solve', 'evaluate', 'equals', 'plus', 'minus',
                          'times', 'multiplied', 'divided', 'add', 'subtract',
                          'multiply', 'divide', 'sum of', 'product of',
                          'how much is', 'math']
         is_math = any(kw in p for kw in math_keywords)
-        if not is_math:
+        # Bare expression like "15*23", "2 + 2", "10/2" (no keyword needed)
+        has_bare_expr = bool(re.search(
+            r'\d+\s*[+\-*/x×÷]\s*\d+', prompt))
+        if not is_math and not has_bare_expr:
             return None
 
         # Extract expression from prompt
-        expression = self._extract_math_expression(p)
+        expression = self._extract_math_expression(prompt)
         if expression is None:
             return None
 
