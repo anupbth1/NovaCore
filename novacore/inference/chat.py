@@ -72,6 +72,19 @@ STORY_INDICATORS = [
 # Simulation
 SIM_THRESHOLD = 0.35
 
+# Stopwords used for overlap guard in semantic search
+_STOPWORDS = frozenset([
+    'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been',
+    'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
+    'would', 'could', 'should', 'may', 'might', 'shall', 'can',
+    'need', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by',
+    'from', 'this', 'that', 'it', 'or', 'and', 'but', 'not',
+    'i', 'me', 'my', 'your', 'we', 'they', 'he', 'she', 'you',
+    'what', 'which', 'who', 'whom', 'whose', 'when', 'where',
+    'why', 'how', 'hi', 'hello', 'hey', 'please', 'there',
+    'some', 'any', 'more', 'most', 'other', 'such', 'only',
+])
+
 
 # ---------------------------------------------------------------------------
 # Semantic Index — fast cosine-similarity retrieval from instruction-answer
@@ -155,11 +168,21 @@ class SemanticIndex:
         self.embeddings = emb
         self.instructions = [' '.join(toks) for toks, _ in pairs]
         self.answers = [ans for _, ans in pairs]
+        # Token sets per instruction for overlap guard (kills hash-collision
+        # garbage matches on short queries like "hi")
+        self._inst_tok_sets = [set(toks) for toks, _ in pairs]
         self._built = True
         print(f"[SemanticIndex] Built: {N} instruction-answer pairs, dim={self.dim}")
 
     def search(self, query_text, vocab, top_k=None):
-        """Return list of (score, answer) sorted descending."""
+        """Return list of (score, answer) sorted descending.
+
+        Cosine similarity alone is fooled by feature-hash collisions when the
+        query is short (1-3 words): the query vector becomes almost one-hot and
+        ANY instruction with a token in the same bucket scores ~0.95.  So we
+        also require REAL word overlap between the query and the matched
+        instruction, and blend it into the final score.
+        """
         if not self._built or self.embeddings is None or len(self.answers) == 0:
             return []
         top_k = top_k or SEMANTIC_SEARCH_TOP_K
@@ -168,19 +191,52 @@ class SemanticIndex:
         if qvec is None:
             return []
 
-        scores = self.embeddings @ qvec
-        if len(scores) <= top_k:
-            top_idx = np.argsort(-scores)
+        # Content words of the query (drop pure stopwords for overlap check)
+        q_tokens = vocab._tokenize(query_text)
+        q_set = set(q_tokens) - _STOPWORDS
+        if not q_set:
+            q_set = set(q_tokens)
+
+        # Cosine similarity = dot product (both L2-normalised)
+        scores = self.embeddings @ qvec  # (N,)
+
+        # Overlap-aware re-ranking: fetch a wider pool, then blend real overlap
+        pool_k = min(len(scores), max(top_k * 10, 100))
+        if len(scores) <= pool_k:
+            order = np.argsort(-scores)
         else:
-            top_idx = np.argpartition(-scores, top_k)[:top_k]
-            top_idx = top_idx[np.argsort(-scores[top_idx])]
+            order = np.argpartition(-scores, pool_k)[:pool_k]
+            order = order[np.argsort(-scores[order])]
 
         results = []
-        for idx in top_idx:
-            s = float(scores[idx])
-            if s > 0:
-                results.append((s, self.answers[idx]))
-        return results
+        for idx in order:
+            cos = float(scores[idx])
+            if cos <= 0:
+                continue
+            inst_set = self._inst_tok_sets[idx]
+            if q_set:
+                overlap = len(q_set & inst_set)
+                overlap_ratio = overlap / max(1, min(len(q_set), 8))
+            else:
+                overlap = 0
+                overlap_ratio = 0.0
+            # Blend: pure cosine trusted more with real overlap
+            blend = cos * (0.45 + 0.55 * overlap_ratio)
+            results.append((blend, cos, overlap, self.answers[idx], inst_set))
+            if len(results) >= pool_k:
+                break
+
+        # Sort by blended score, drop zero-overlap matches entirely (they are
+        # hash collisions, not real relevance)
+        results.sort(key=lambda r: r[0], reverse=True)
+        out = []
+        for blend, cos, overlap, ans, inst_set in results:
+            if overlap == 0:
+                continue
+            out.append((blend, ans))
+            if len(out) >= top_k:
+                break
+        return out
 
     def _encode_query(self, text, vocab):
         vec = np.zeros(self.dim, dtype=np.float32)
