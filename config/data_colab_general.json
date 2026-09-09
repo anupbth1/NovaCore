@@ -21,7 +21,8 @@
       "mode": "stream",
       "random": false,
       "add_datasets": false,
-      "absorb": false
+      "absorb": false,
+      "fields": { "instruction": "instruction", "input": "input", "output": "answer" }
     },
     "HuggingFaceH4/no_robots": {
       "split": "train",
@@ -29,7 +30,8 @@
       "mode": "stream",
       "random": false,
       "add_datasets": false,
-      "absorb": false
+      "absorb": false,
+      "fields": { "messages": "messages" }
     },
     "roneneldan/TinyStories": {
       "split": "train",
@@ -37,7 +39,8 @@
       "mode": "stream",
       "random": false,
       "add_datasets": false,
-      "absorb": false
+      "absorb": false,
+      "fields": { "text": "text" }
     },
     "OpenAssistant/oasst2": {
       "split": "train",
@@ -45,7 +48,8 @@
       "mode": "stream",
       "random": false,
       "add_datasets": false,
-      "absorb": false
+      "absorb": false,
+      "fields": { "text": "text" }
     }
   }
 }

@@ -54,6 +54,15 @@ _CHAT_COLS = {"messages", "conversation", "chat", "message"}
 # Columns that can serve as a stable per-row identity for dedupe
 _UID_COLS = {"uid", "id", "_id", "guid", "unique_id", "key", "hash", "sample_id"}
 
+# Structural/metadata columns (ids, uuids, timestamps, counts, states) are
+# NEVER semantic content: auto-detect must not map them to a role, otherwise
+# training picks up garbage like 'prompt_id', 'message_id' or booleans.
+_STRUCT_TOKENS = {
+    "id", "ids", "uuid", "guid", "uid", "hash", "key",
+    "timestamp", "created", "date", "updated", "modified",
+    "status", "state", "count", "index",
+}
+
 # Reservoir scan bound for random selection (we never scan the whole repo)
 _RANDOM_SCAN_FACTOR = 20
 
@@ -325,6 +334,20 @@ def _fmt_bytes(n):
         n /= 1024
 
 
+def _looks_structural_value(sample, ctype=None):
+    """Mark a column as metadata when its sampled values are booleans/Nulls
+    even if the NAME happens to look semantic (e.g. oasst2 'review_result'
+    which is a True/False flag, never an answer)."""
+    if ctype:
+        t = str(ctype).lower()
+        if "bool" in t or "classlabel" in t:
+            return True
+    if sample is None:
+        return False
+    s = str(sample).strip().lower()
+    return s in {"true", "false", "none", "null", ""}
+
+
 def _role_for_col(name):
     """Guess a semantic role for a column name.
 
@@ -336,6 +359,11 @@ def _role_for_col(name):
         return None, None
     toks = set(t for t in n.split("_") if t)
     if not toks:
+        return None, None
+
+    # Structural/metadata columns never map to a role (checked BEFORE role
+    # matching so 'prompt_id', 'message_id', 'created_date', ... stay out).
+    if toks & _STRUCT_TOKENS:
         return None, None
 
     # Exact match against well-known role names -> HIGH confidence
@@ -992,6 +1020,8 @@ class HFLoader:
         unknown = []
         for c in cols:
             role, conf = _role_for_col(c)
+            if role and _looks_structural_value(samples.get(c), types.get(c)):
+                role, conf = None, None
             if role:
                 fields[c] = role
                 self._schema_entries.append((c, role, conf))
@@ -1047,6 +1077,8 @@ class HFLoader:
         unknown = []
         for c in cols:
             role, conf = _role_for_col(c)
+            if role and _looks_structural_value(samples.get(c), types.get(c)):
+                role, conf = None, None
             if role:
                 fields[c] = role
                 self._schema_entries.append((c, role, conf))

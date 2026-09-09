@@ -579,7 +579,7 @@ def cmd_train(args):
                         sources.append(f"hf:{ds_name}")
                         if _field_des:
                             _roles = ", ".join(f"{c}->{r}" for c, r in _field_des.items())
-                            _step_log.ok(f"trained {_pcount} row(s) on fields [{_roles}]")
+                            _step_log.ok(f"pooled {_pcount} row(s) on fields [{_roles}]")
                         _step_log.ok(f"+{_pcount} docs ready from existing pool  ({_step_log.total()})")
                     continue
 
@@ -654,11 +654,11 @@ def cmd_train(args):
                     _row_count = len(texts)
                 if _field_des:
                     _roles = ", ".join(f"{c}->{r}" for c, r in _field_des.items())
-                    _step_log.ok(f"trained {_row_count} row(s) on fields [{_roles}]")
+                    _step_log.ok(f"pooled {_row_count} row(s) on fields [{_roles}]")
                 elif _schema.get("column"):
-                    _step_log.ok(f"trained {_row_count} row(s) on column [{_schema['column']}]")
+                    _step_log.ok(f"pooled {_row_count} row(s) on column [{_schema['column']}]")
                 else:
-                    _step_log.ok(f"trained {_row_count} row(s)")
+                    _step_log.ok(f"pooled {_row_count} row(s)")
                 if getattr(loader_hf, "_skipped", 0):
                     _step_log.skip(f"{loader_hf._skipped} empty/invalid row(s) not trained")
                 if _row_count:
