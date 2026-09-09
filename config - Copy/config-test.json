@@ -1,0 +1,187 @@
+{
+  "defaults": {
+    "dim": 1024,
+    "layers": 8,
+    "vocab_size": 50000,
+    "max_tokens": 4096,
+    "chat_context_tokens": 8192,
+    "temperature": 0.7,
+    "max_history": 50,
+    "seed": 42,
+    "hasher_depth": 3,
+    "hasher_buckets_multiplier": 4,
+    "hasher_seed_stride": 7919,
+    "reservoir_seed": 42,
+    "reservoir_sample_size": 100000,
+    "reservoir_merge_multiplier": 2,
+    "pattern_vocab_cap": 200000,
+    "pattern_sample_cap": 500000,
+    "analytic_target_dim": 2048,
+    "ngram_range": [1, 3],
+    "token_min_freq": 2,
+    "pattern_min_freq": 2,
+    "pattern_max_size": 200000,
+    "pattern_top_k": 100,
+    "encoder_input_dim": 2048,
+    "ridge_lambda": 0.01,
+    "predictor_top_k": 50,
+    "predictor_scan_vocab_cap": 20000,
+    "generation_history_tokens": 100,
+    "unigram_fallback_k": 10,
+    "compress_f16_threshold": 0.001,
+    "compress_f32_threshold": 0.0001,
+    "cooccurrence_window": 5,
+    "memory_cleanup_interval": 500000,
+    "reasoning_extract_cap": 50000,
+    "creative_extract_cap": 50000,
+    "reservoir_max_chars": 4096,
+    "ram_safe_overrides": {
+      "max_tokens": 4096,
+      "vocab_size": 50000,
+      "pattern_vocab_cap": 200000,
+      "pattern_sample_cap": 500000,
+      "reservoir_sample_size": 100000,
+      "reservoir_merge_multiplier": 2
+    },
+
+    "neural_engine": {
+      "enabled": true,
+      "input_dim": 128,
+      "hidden_dim": 64,
+      "output_dim": 32,
+      "activation_cache_size": 200,
+      "use_fast_sigmoid": true,
+      "enable_caching": true
+    },
+
+    "virtual_simulation": {
+      "enabled": true,
+      "quality_threshold": 0.5,
+      "enable_caching": true,
+      "cache_size": 2000,
+      "scoring_weights": {
+        "length": 0.4,
+        "relevance": 0.4,
+        "coherence": 0.2
+      }
+    },
+
+    "verification_engine": {
+      "enabled": true,
+      "max_retries": 3,
+      "min_score": 0.4,
+      "enable_caching": true,
+      "reservoir_search_limit": 500,
+      "enable_fast_retry": true
+    },
+
+    "python_terminal": {
+      "enabled": true,
+      "safe_mode": true,
+      "max_execution_time_ms": 10000,
+      "allowed_operations": ["print", "math", "variables", "loops", "conditionals", "functions"]
+    },
+
+    "chat": {
+      "max_history": 50,
+      "context_tokens": 8192,
+      "generation_history_tokens": 100,
+      "use_model_brain": true
+    },
+
+    "artifact_patterns": [
+      "<instruction>.*?</instruction>",
+      "</?instruction>",
+      "<answer>.*?</answer>",
+      "</?answer>",
+      "<text>.*?</text>",
+      "</?text>",
+      "<input>.*?</input>",
+      "</?input>",
+      "<user>.*?</user>",
+      "</?user>",
+      "<assistant>.*?</assistant>",
+      "</?assistant>",
+      "<output>.*?</output>",
+      "</?output>",
+      "###\\s*Instruction:.*?###\\s*Response:",
+      "Below is an instruction.*?###\\s*Response:",
+      "Write a response that appropriately completes the request\\.\\s*",
+      "The request\\.\\s*",
+      "The following sentence.*?###\\s*Response:\\s*",
+      "<\\|im_start\\|>.*?<\\|im_end\\|>",
+      "```output\\s*"
+    ],
+
+    "training_upgrades": {
+      "enable_svd_embeddings": true,
+      "svd_vocab_size": 5000,
+      "svd_dim": 128,
+      "enable_idf_weighting": true,
+      "enable_pattern_hierarchy": true,
+      "max_hierarchy_depth": 3,
+      "enable_confidence_scoring": true,
+      "confidence_min_freq": 3,
+      "enable_multi_head_reservoir": true,
+      "num_reservoir_heads": 5,
+      "reservoir_head_sample_size": 10000,
+      "cooccurrence_window": 5,
+      "quantize_embeddings": true,
+      "quantize_bit_width": 8,
+      "enable_semantic_search": true
+    },
+
+    "streaming": {
+      "enabled": false,
+      "batch_size": 1000,
+      "prefetch_batches": 2,
+      "shuffle_buffer": 5000,
+      "stream_epochs": 1,
+      "reservoir_max_chars": 4096,
+      "reasoning_extract_cap": 50000,
+      "creative_extract_cap": 50000,
+      "memory_cleanup_interval": 500000
+    }
+  },
+
+  "paths": {
+    "default_weights": "weights",
+    "data_dir": "data",
+    "hf_data": "data/hf_data",
+    "hf_cache": "data/hf_cache",
+    "config_loaded": true
+  },
+
+  "cli": {
+    "preview_rows": 10,
+    "compress_ratio": 0.5
+  },
+
+  "train": {
+    "default_format": "train"
+  },
+
+  "tokenizer": {
+    "type": "whitespace"
+  },
+
+  "pattern_vocab_cap": 200000,
+  "pattern_sample_cap": 500000,
+  "reservoir_sample_size": 100000,
+  "reservoir_merge_multiplier": 2,
+  "hasher_depth": 3,
+  "hasher_buckets_multiplier": 4,
+  "ngram_range": [1, 3],
+  "analytic_target_dim": 2048,
+  "pattern_min_freq": 2,
+  "pattern_max_size": 200000,
+  "pattern_top_k": 100,
+  "encoder_input_dim": 2048,
+  "ridge_lambda": 0.01,
+  "predictor_top_k": 50,
+  "predictor_scan_vocab_cap": 20000,
+  "generation_history_tokens": 100,
+  "unigram_fallback_k": 10,
+  "compress_f16_threshold": 0.001,
+  "compress_f32_threshold": 0.0001
+}

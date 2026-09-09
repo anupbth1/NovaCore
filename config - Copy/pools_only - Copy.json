@@ -1,0 +1,51 @@
+{
+  // Pools-only training config: assumes pools are already built and complete
+// in data/hf_cache/pool/. Trains from existing pool.jsonl files only.
+// Use: python cli/main.py train-pools --dataset config\pools_only.json --output <model_dir> --config config/config.json
+  "datasets": {
+    "HuggingFaceH4/no_robots": {
+      "split": "train", "max_rows": "full", "mode": "download", "random": false, "add_datasets": false, "absorb": false,
+      "filter": { "enabled": false }
+    },
+    "OpenAssistant/oasst1": {
+      "split": "train", "max_rows": "full", "mode": "download", "random": false, "add_datasets": false, "absorb": false,
+      "filter": { "enabled": false }
+    },
+    "OpenAssistant/oasst2": {
+      "split": "train", "max_rows": "full", "mode": "download", "random": false, "add_datasets": false, "absorb": false,
+      "filter": { "enabled": false }
+    },
+    "rajpurkar/squad": {
+      "split": "train", "max_rows": "full", "mode": "download", "random": false, "add_datasets": false, "absorb": false,
+      "filter": { "enabled": false }
+    },
+    "rajpurkar/squad_v2": {
+      "split": "train", "max_rows": "full", "mode": "download", "random": false, "add_datasets": false, "absorb": false,
+      "filter": { "enabled": false }
+    },
+    "tatsu-lab/alpaca": {
+      "split": "train", "max_rows": "full", "mode": "download", "random": false, "add_datasets": false, "absorb": false,
+      "filter": { "enabled": false }
+    },
+    "roneneldan/TinyStories": {
+      "split": "train", "max_rows": "full", "mode": "download", "random": false, "add_datasets": false, "absorb": false,
+      "filter": { "enabled": false }
+    },
+    "openbmb/UltraData-SFT-2605": {
+      "subset": [
+        {
+          "name": "Math", "split": "no_think", "max_rows": "full", "mode": "download", "random": false, "add_datasets": false, "absorb": false,
+          "filter": { "enabled": false }
+        },
+        {
+          "name": "Multi-lang-Knowledge", "split": "no_think", "max_rows": "full", "mode": "download", "random": false, "add_datasets": false, "absorb": false,
+          "filter": { "enabled": false }
+        },
+        {
+          "name": "Knowledge", "split": "think", "max_rows": "full", "mode": "download", "random": false, "add_datasets": false, "absorb": false,
+          "filter": { "enabled": false }
+        }
+      ]
+    }
+  }
+}
