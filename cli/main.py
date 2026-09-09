@@ -23,7 +23,7 @@ from tqdm import tqdm
 # Ensure we can import novacore package even if not installed
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from novacore.core.encoder import RandomFourierEncoder
+from novacore.core.encoder import RandomFourierEncoder, backend_info, release_memory
 from novacore.core.hasher import FeatureHasher
 from novacore.core.patterns import PatternExtractor
 from novacore.core.reservoir import ReservoirSampler
@@ -1616,7 +1616,7 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
         # Free memory periodically for long streams + auto-tuner guard
         _mem_cleanup_interval = _gd('memory_cleanup_interval')
         if count % _mem_cleanup_interval == 0:
-            gc.collect()
+            release_memory()
             # When running near 90% RAM, shed reservoir aggressively to prevent OOM
             if tuner.mem_pressure() > 0.85:
                 # Trim reservoir by half if over budget; keeps representative subset
@@ -1694,6 +1694,7 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
             log.ok(f"Training upgrades saved: {upgrade_dir} ({log.total()})")
         except Exception as e:
             log.warn(f"Training upgrades failed: {e}")
+    release_memory(verbose=True)
 
     # ===== REASONING + CREATIVE pattern extraction =====
     sample_list = list(sampler.sample()) if not hasattr(sampler, '_sampled_list') else sampler._sampled_list
@@ -1785,6 +1786,7 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
         except Exception:
             pass
         _pool = None
+    release_memory(verbose=True)
 
     # --- Analytic weights from reservoir sample --------------------------
     processor = TextProcessor(vocab=vocab, dim=dim)
@@ -1796,6 +1798,7 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
     encoder = None
     if sample:
         log.step("computing analytic weights")
+        log.info(f"auto linalg backend: {backend_info()}")
         X = np.array([processor.text_to_vector(t) for t in tqdm(sample, desc="Encoding")])
         Y = np.zeros((X.shape[0], min(len(vocab), _tgt)), dtype=np.float64)
         for i, t in enumerate(sample):
@@ -1817,7 +1820,7 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
 
     # Free large intermediate objects before save
     del sampler, X, Y
-    gc.collect()
+    release_memory(verbose=True)
 
     # --- Save ------------------------------------------------------------
     arrays = {}
@@ -1886,10 +1889,11 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
     }
     wm.save(arrays, metadata)
     vocab.save(os.path.join(out_dir, "vocab.json"))
+    release_memory(verbose=True)
 
     info = wm.info()
     log.ok(f"saved weights: {info.get('total_size_mb', 0)} MB  ({log.total()})")
-    
+
     # Save knowledge base for batch encoding
     if knowledge_extractor:
         try:
@@ -2036,6 +2040,7 @@ def _encode_texts_to_weights(texts, out_dir, dim, layers, vocab_size, max_tokens
 
     # --- Analytic weights ---
     log.step("computing analytic weights")
+    log.info(f"auto linalg backend: {backend_info()}")
     sample = sampler.sample()
     encoder = None
     if sample:
@@ -2087,10 +2092,11 @@ def _encode_texts_to_weights(texts, out_dir, dim, layers, vocab_size, max_tokens
     }
     wm.save(arrays, metadata)
     vocab.save(os.path.join(out_dir, "vocab.json"))
+    release_memory(verbose=True)
 
     info = wm.info()
     log.ok(f"saved weights: {info.get('total_size_mb', 0)} MB  ({log.total()})")
-    
+
     # Save knowledge base for batch encoding
     if knowledge_extractor:
         try:
