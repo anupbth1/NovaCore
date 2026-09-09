@@ -11,6 +11,7 @@ Architecture:
 """
 import os
 import re
+import string
 import pickle
 import random
 import numpy as np
@@ -94,7 +95,44 @@ _STOPWORDS = frozenset([
     'what', 'which', 'who', 'whom', 'whose', 'when', 'where',
     'why', 'how', 'hi', 'hello', 'hey', 'please', 'there',
     'some', 'any', 'more', 'most', 'other', 'such', 'only',
+    'kya', 'ka', 'ki', 'ke', 'kaise', 'kahan', 'kyun', 'kis',
+    'hai', 'ho', 'hain', 'kar', 'karta', 'karte', 'hota', 'hoti', 'hote',
 ])
+
+# Smalltalk / greeting detection.  These are conversational openers where
+# the model must reply from greeting data — NOT from factual retrieval that
+# would produce unrelated trivia.
+SMALLTALK_PHRASES = frozenset([
+    'hi', 'hello', 'hey', 'yo', 'how are you', 'how are you doing',
+    'how is it going', 'how have you been', 'how do you do',
+    'good morning', 'good afternoon', 'good evening', 'whats up',
+    "what's up", 'hey there', 'hello there', 'hi there',
+])
+SMALLTALK_PROBES = ('hello', 'hi', 'hey', 'how are you',
+                    'good morning', 'good afternoon', 'good evening')
+
+# Fact aggregation — compile-an-answer fallback.  When no single direct QA
+# pair answers the query, gather every mention of the query's content words
+# across the model's own data and join the best snippets into one answer.
+AGGREGATE_TOP_N = 6
+AGGREGATE_MAX_CHARS = 1400
+AGGREGATE_MIN_CHARS = 40
+# Ambiguous abbreviations: expand each to related words when scoring snippet
+# relevance so 'pm' (prime minister) matches prime/minister instructions
+# instead of post-meridiem timezone text.
+_FACT_EXPANSION = {
+    'pm': ('prime', 'minister', 'ministers'),
+    'usa': ('america', 'united', 'states'),
+    'us': ('america', 'united', 'states'),
+}
+
+
+def _content_toks(tokens):
+    """Drop punctuation-only tokens and stopwords.  If that empties the list,
+    fall back to all tokens that contain any real letters so greeting queries
+    like 'hi' / 'hello' still keep meaningful content for overlap checks."""
+    real = [t for t in tokens if any(c not in string.punctuation for c in t)]
+    return [t for t in real if t not in _STOPWORDS] or real
 
 
 # ---------------------------------------------------------------------------
@@ -253,66 +291,74 @@ class SemanticIndex:
         self._built = True
         print(f"[SemanticIndex] Built: {N} instruction-answer pairs, dim={self.dim}")
 
-    def search(self, query_text, vocab, top_k=None):
-        """Return list of (score, answer) sorted descending.
+    def search(self, query_text, vocab, top_k=None, log=None):
+        """Return list of (score, answer, instruction) sorted descending.
 
         Cosine similarity alone is fooled by feature-hash collisions when the
         query is short (1-3 words): the query vector becomes almost one-hot and
         ANY instruction with a token in the same bucket scores ~0.95.  So we
         also require REAL word overlap between the query and the matched
         instruction, and blend it into the final score.
+
+        When *log* (a callable) is provided, every surviving match is printed
+        with its score so the user can watch what the model is retrieving.
         """
         if not self._built or self.embeddings is None or len(self.answers) == 0:
+            if log is not None:
+                log("     · semantic index empty — skipping")
             return []
         top_k = top_k or SEMANTIC_SEARCH_TOP_K
 
         qvec = self._encode_query(query_text, vocab)
         if qvec is None:
+            if log is not None:
+                log("     · query produced no embedding vector")
             return []
 
-        # Content words of the query (drop pure stopwords for overlap check)
-        q_tokens = vocab._tokenize(query_text)
-        q_set = set(q_tokens) - _STOPWORDS
+        # Content words of the query for the overlap guard: drop stopwords AND
+        # punctuation-only tokens.  If nothing survives, fall back to all real
+        # words so greeting queries like "hi" / "hello" still keep meaning.
+        q_set = set(_content_toks(vocab._tokenize(query_text)))
         if not q_set:
-            q_set = set(q_tokens)
+            if log is not None:
+                log("     · query has no usable content words")
+            return []
+        total_q = sum(self.idf.get(t, 1.0) for t in q_set)
 
-        # Cosine similarity = dot product (both L2-normalised)
+        # Cosine similarity = dot product (both L2-normalised), full scan.
+        # The index is small (tens of thousands of docs) so a full scan is
+        # cheap and gives strictly better relevance than a hash-bucket pool
+        # which was fooled by collisions on short queries.
         scores = self.embeddings @ qvec  # (N,)
 
-        # Overlap-aware re-ranking: fetch a wider pool, then blend real overlap
-        pool_k = min(len(scores), max(top_k * 10, 100))
-        if len(scores) <= pool_k:
-            order = np.argsort(-scores)
-        else:
-            order = np.argpartition(-scores, pool_k)[:pool_k]
-            order = order[np.argsort(-scores[order])]
-
         results = []
-        for idx in order:
+        for idx in np.argsort(-scores):
             cos = float(scores[idx])
             if cos <= 0:
-                continue
+                break
             inst_set = self._inst_tok_sets[idx]
-            if q_set:
-                overlap = len(q_set & inst_set)
-                overlap_ratio = overlap / max(1, min(len(q_set), 8))
-            else:
-                overlap = 0
-                overlap_ratio = 0.0
-            # Blend: pure cosine trusted more with real overlap
-            blend = cos * (0.45 + 0.55 * overlap_ratio)
-            results.append((blend, cos, overlap, self.answers[idx], inst_set))
-            if len(results) >= pool_k:
+            overlap_toks = q_set & inst_set
+            if not overlap_toks:
+                continue  # zero real word overlap = hash collision, not relevance
+            num = sum(self.idf.get(t, 1.0) for t in overlap_toks)
+            overlap_ratio = num / max(total_q, 1e-9)
+            # Blend: cosine trusted more when the instruction shares rare (high
+            # idf) content words with the query.
+            blend = cos * (0.4 + 0.6 * overlap_ratio)
+            results.append((blend, cos, overlap_ratio, len(overlap_toks),
+                            self.answers[idx], idx))
+            if len(results) >= max(top_k * 5, 25):
                 break
 
-        # Sort by blended score, drop zero-overlap matches entirely (they are
-        # hash collisions, not real relevance)
         results.sort(key=lambda r: r[0], reverse=True)
         out = []
-        for blend, cos, overlap, ans, inst_set in results:
-            if overlap == 0:
-                continue
-            out.append((blend, ans))
+        for blend, cos, ratio, overlap, ans, idx in results:
+            inst_text = self.instructions[idx]
+            if log is not None:
+                log(f"     · idx={idx}  score={blend:.3f} cos={cos:.3f} "
+                    f"word_overlap={overlap} ratio={ratio:.2f}  "
+                    f"instruction: '{inst_text[:90]}'")
+            out.append((blend, ans, inst_text))
             if len(out) >= top_k:
                 break
         return out
@@ -376,6 +422,17 @@ class SemanticIndex:
 # ---------------------------------------------------------------------------
 # ChatSession — ZERO config dependency, all from model weights/metadata
 # ---------------------------------------------------------------------------
+_HONEST_REFUSAL = ("I don't have a reliable answer for that from my trained data "
+                   "yet. If you teach me a dataset with it, I'll answer correctly.")
+
+# Interrogative heads that start a NEW sub-question inside a compound prompt.
+_SUBQ_HEADS = (
+    'who', 'what', 'when', 'where', 'why', 'how', 'which', 'whom',
+    'what\'s', 'whats', 'define', 'explain', 'describe', 'is there',
+    'are there', 'do you know', 'tell me', 'can you', 'does', 'should',
+)
+
+
 class ChatSession:
     """
     Loads a saved NovaCore model and provides interactive chat.
@@ -396,8 +453,18 @@ class ChatSession:
         self._loaded = False
         self.semantic_index = None
         self.pool_pairs = []
+        self.fact_index = {}
         self.max_history = _DEFAULT_MAX_HISTORY
         self.chat_context_tokens = _DEFAULT_CHAT_CONTEXT_TOKENS
+        self.enable_cortex = False
+        self.cortex = None
+        self.dim = None
+        self.qa_bank = []
+        self.enable_cde = False
+        self.cde = None
+        self.knowledge_index = None
+        self.reasoner = None
+        self.creative = None
 
     def load(self):
         """Load model — ALL values from weights/metadata, NOT from config."""
@@ -471,6 +538,8 @@ class ChatSession:
               f"{len(qa_bank)} QA pairs baked in weights")
         print(f"[ChatSession] Model: dim={dim}, vocab={len(vocab)}, "
               f"temp={self.temperature}")
+        self.qa_bank = qa_bank
+        self.dim = dim
 
         # Semantic index from model-internal data ONLY (reservoir + qa_bank).
         # No external pool files — the model is self-contained.
@@ -483,6 +552,26 @@ class ChatSession:
             inst, ans = SemanticIndex._extract_pair(text)
             if inst and ans:
                 self.pool_pairs.append((inst, ans))
+
+        # Inverted "fact index" from the same model-internal pairs: for every
+        # instruction term remember (instruction terms, answer).  Used by FACT
+        # AGGREGATION to compile an answer from every mention of the query's
+        # content words — the model's own data, nothing external.
+        fact_index = {}
+        for _inst, _ans in zip(self.semantic_index.instructions,
+                               self.semantic_index.answers):
+            if not _ans or len(_ans) < 10:
+                continue
+            _terms = frozenset(_content_toks(vocab._tokenize(_inst)))
+            if not _terms:
+                continue
+            for _t in _terms:
+                fact_index.setdefault(_t, []).append((_terms, _ans))
+        self.fact_index = fact_index
+        _fact_terms = len(fact_index)
+        _fact_refs = sum(len(v) for v in fact_index.values())
+        print(f"[ChatSession] Fact index: {_fact_terms} terms, "
+              f"{_fact_refs} snippet refs")
 
         extractor = PatternExtractor()
         extractor.patterns = dict(self.patterns_data)
@@ -757,6 +846,18 @@ class ChatSession:
         if not self._loaded:
             self.load()
 
+        # ============================================================
+        # SMALLTALK SHORT-CIRCUIT — "hi" / "how are you?" must ALWAYS get
+        # a greeting answer regardless of history or priority ordering.
+        # Answers are real greeting sentences from the model's own data.
+        # ============================================================
+        try:
+            _greet = self._smalltalk_reply(prompt)
+            if _greet:
+                return _greet
+        except Exception:
+            pass
+
         if max_tokens is None:
             max_tokens = self.metadata.get("max_tokens", 4096)
         if temperature is None:
@@ -773,11 +874,11 @@ class ChatSession:
 
         def log(msg, color=GRAY):
             if verbose:
-                print(f"{color}{msg}{RESET}")
+                print(f"{color}{msg}{RESET}", flush=True)
 
         def log_step(step, detail="", color=GRAY):
             if verbose:
-                print(f"{color}  ▶ {step}{RESET} {GRAY}{detail}{RESET}")
+                print(f"{color}  ▶ {step}{RESET} {GRAY}{detail}{RESET}", flush=True)
 
         log(f"{'='*60}")
         log(f"INPUT: {prompt}")
@@ -785,44 +886,89 @@ class ChatSession:
         log(f"{'='*60}")
 
         # ============================================================
+        # COMPOUND-PROMPT DECOMPOSITION — "who is X and what is Y?"
+        # Each independent sub-question runs the full pipeline, then the
+        # answers are joined.  This is the transformer-style behaviour of
+        # composing an answer from multiple retrieval passes.
+        # ============================================================
+        if not getattr(self, '_decomp_depth', 0):
+            parts = self._decompose_multi(prompt)
+            if parts:
+                log("  ▶ COMPOUND PROMPT — answering each part separately", CYAN)
+                self._decomp_depth = 1
+                _pieces = []
+                try:
+                    for _p in parts:
+                        try:
+                            _a = self.generate(
+                                _p, max_tokens=min(max_tokens, 140),
+                                temperature=temperature, use_history=False,
+                                verbose=False)
+                        except Exception:
+                            _a = None
+                        if not _a or _a.strip() == _HONEST_REFUSAL:
+                            _pieces.append(
+                                "(I don't have that in my training data.)")
+                        else:
+                            _pieces.append(_a.strip())
+                finally:
+                    self._decomp_depth = 0
+                if _pieces:
+                    log(f"  ✓ COMPOUND ANSWERED ({len(_pieces)} parts)", GREEN)
+                    log(f"{'='*60}")
+                    return '\n\n'.join(_pieces)
+
+        # ============================================================
         # VIRTUAL SIMULATION WRAPPER
         # ============================================================
         def run_virtual_sim(candidate_text, source_name):
-            """Run virtual simulation on a candidate. Returns (passed, score, corrected_text)."""
+            """Run virtual simulation on a candidate.
+            Returns (passed, score, corrected_text, relevant)."""
             if not self.model:
-                return True, 1.0, candidate_text  # no model = no sim
-            
+                return True, 1.0, candidate_text, True  # no model = no sim
+
             log(f"  🔮 VIRTUAL SIM on [{source_name}]...", CYAN)
             log(f"     Input: {candidate_text[:100]}...", GRAY)
-            
+
             # Use the model's neural engine virtual simulation
             sim_result = self.model.neural_engine.virtual_simulation.simulate(prompt, candidate_text)
             score = sim_result.get('score', 0.0)
             final_text = sim_result.get('final_response', candidate_text)
             passed = sim_result.get('passed', False)
-            
-            log(f"     Score: {score:.4f} (threshold={self.model.neural_engine.virtual_simulation.quality_threshold:.2f})", 
+            relevant = sim_result.get('relevant', True)
+
+            log(f"     Score: {score:.4f} (threshold={self.model.neural_engine.virtual_simulation.quality_threshold:.2f})",
                 GREEN if passed else YELLOW)
-            if sim_result.get('corrected'):
+            if not relevant:
+                log(f"     ✗ IRRELEVANT — answer shares no content words with "
+                    f"the query", YELLOW)
+            elif sim_result.get('corrected'):
                 log(f"     ✓ CORRECTED by virtual sim", GREEN)
                 log(f"     Corrected: {final_text[:100]}...", GRAY)
             elif passed:
                 log(f"     ✓ PASSED", GREEN)
             else:
                 log(f"     ✗ FAILED — will retry/fallback", YELLOW)
-            
-            # Also run verification engine for extra check
+
+            # Also run verification engine for extra check — but only for
+            # candidates that are relevant to the query.  Retrieving/rewriting
+            # an irrelevant answer would just re-introduce the garbage the
+            # relevance gate just rejected.
             if not passed:
-                verify_result = self.model.neural_engine.verification_engine.verify_and_retry(prompt, final_text)
-                if verify_result.get('verified'):
-                    final_text = verify_result['final_response']
-                    score = max(score, verify_result['scores'][-1] if verify_result['scores'] else score)
-                    passed = True
-                    log(f"     ✓ VERIFICATION PASSED (retries={verify_result['attempts']})", GREEN)
+                if relevant:
+                    verify_result = self.model.neural_engine.verification_engine.verify_and_retry(prompt, final_text)
+                    if verify_result.get('verified'):
+                        final_text = verify_result['final_response']
+                        score = max(score, verify_result['scores'][-1] if verify_result['scores'] else score)
+                        passed = True
+                        log(f"     ✓ VERIFICATION PASSED (retries={verify_result['attempts']})", GREEN)
+                    else:
+                        log(f"     ✗ VERIFICATION FAILED", YELLOW)
                 else:
-                    log(f"     ✗ VERIFICATION FAILED", YELLOW)
-            
-            return passed, score, final_text
+                    log(f"     · skipping verification rescue on irrelevant "
+                        f"candidate", YELLOW)
+
+            return passed, score, final_text, relevant
 
         # ============================================================
         # PRIORITY 1: Python Terminal — math AND direct code execution
@@ -864,7 +1010,43 @@ class ChatSession:
             nonlocal best_effort, best_effort_score
             log(f"  Candidate [{source_name}]: {candidate[:120]}...", BLUE)
 
+            if source_name == 'fact-agg':
+                # Fact-compiled answers are relevant by construction: every
+                # snippet came from an instruction that mentions the query's
+                # own content words.  Accept them directly — the strict sim
+                # word-overlap gate would wrongly reject e.g. 'who is pm of
+                # india' because real facts say 'prime minister' not 'pm'.
+                final_text = candidate.strip()
+                if len(final_text) < AGGREGATE_MIN_CHARS:
+                    log("  → fact-compiled answer too short — trying next",
+                        YELLOW)
+                    return None
+                log("  ✓ FACT AGGREGATION accepted — real corpus snippets",
+                    GREEN)
+                return final_text
+
             final_text = candidate
+
+            # 0) CORTEX exact short answers (math-like) are trusted directly
+            if (source_name == 'cortex-attn' and final_text and
+                    len(final_text.strip()) <= 24):
+                stripped = final_text.strip()
+                if stripped.isdigit() or re.fullmatch(r'[-+]?\d*\.?\d+', stripped):
+                    log("  ✓ CORTEX exact short answer accepted", GREEN)
+                    return stripped
+
+            # 0b) Open-ended fact requests: 'tell me a fun fact' has no entity
+            # term for the sim's lexical overlap gate, so a real-data answer
+            # ("turtles can hold their breath...") gets wrongly rejected.
+            # Real sentences from the corpus are accepted directly.
+            _pl = prompt.lower()
+            if any(_k in _pl for _k in (
+                    'fun fact', 'random fact', 'interesting fact',
+                    'tell me a fact', 'share a fact', 'a fact about',
+                    'did you know')):
+                if len(final_text.strip()) >= 15:
+                    log("  ✓ OPEN-ENDED FACT answer accepted", GREEN)
+                    return final_text.strip()
 
             # 1) If candidate contains code, execute it to VERIFY correctness.
             code_block = _extract_code_block(candidate)
@@ -881,8 +1063,12 @@ class ChatSession:
                     return None  # reject broken code candidate
 
             # 2) Virtual simulation on every output
-            passed, score, sim_text = run_virtual_sim(final_text, source_name)
-            if score > best_effort_score and sim_text and len(sim_text) > 3:
+            passed, score, sim_text, relevant = run_virtual_sim(final_text, source_name)
+            # Best-effort fallback only from candidates that are RELEVANT to the
+            # query — never from irrelevant triage that merely scored on
+            # length/formatting.
+            if (score > best_effort_score and sim_text and len(sim_text) > 3
+                    and relevant):
                 best_effort_score = score
                 best_effort = sim_text
             if not passed:
@@ -895,81 +1081,201 @@ class ChatSession:
         # CANDIDATE GENERATORS — each yields (source_name, candidate_text)
         # ============================================================
         
+        def gen_cortex():
+            """Generate candidate from CORTEX attention recall
+            (training-free memory attention net)."""
+            if not self._ensure_cortex():
+                log("  →  cortex attention net not built", GRAY)
+                return
+            log("  🧿 CORTEX attention recall...", CYAN)
+            _mt = min(int(max_tokens or 256), 256)
+            try:
+                ans = self.cortex.generate(prompt, max_tokens=_mt,
+                                           temperature=0.2)
+            except Exception as e:
+                log(f"  →  cortex error: {e}", YELLOW)
+                return
+            if ans and len(ans) > 1:
+                log(f"  ✓ cortex produced: {ans[:120]}", GREEN)
+                yield "cortex-attn", ans
+            else:
+                log("  →  cortex produced nothing usable", YELLOW)
+
         def gen_semantic():
             """Generate candidates from semantic index."""
             if not (self.semantic_index and self.semantic_index._built):
+                log("  →  semantic index not built", GRAY)
                 return
             vocab = self._get_vocab()
-            results = self.semantic_index.search(prompt, vocab, top_k=SEMANTIC_SEARCH_TOP_K)
-            for i, (score, ans) in enumerate(results):
+            query_terms = _content_toks(vocab._tokenize(prompt))
+            norm_prompt = prompt.strip().lower().rstrip('?!., ')
+            is_smalltalk = (norm_prompt in SMALLTALK_PHRASES) or not query_terms
+
+            if is_smalltalk:
+                # Greeting / no content words: real greetings live in the data
+                # under probe instructions like 'hello .' / 'hi there', so
+                # search with greeting probes instead of the raw query.
+                log("  🔎 greeting/no-content query → searching with greeting "
+                    "probes...", CYAN)
+                results = []
+                seen = set()
+                for probe in SMALLTALK_PROBES:
+                    r = self.semantic_index.search(probe, vocab, top_k=3)
+                    for s, a, i in r:
+                        if a not in seen:
+                            seen.add(a)
+                            results.append((s, a, i))
+                log(f"     {len(results)} greeting candidates from probes", GRAY)
+                for s, a, i in results[:SEMANTIC_SEARCH_TOP_K]:
+                    log(f"     · probe hit score={s:.3f} answer: '{a[:80]}'", GRAY)
+                results = results[:SEMANTIC_SEARCH_TOP_K]
+            else:
+                log("  🔎 searching semantic index (instruction-answer pairs)...", CYAN)
+                results = self.semantic_index.search(prompt, vocab,
+                                                     top_k=SEMANTIC_SEARCH_TOP_K,
+                                                     log=log)
+            if not results:
+                log("  →  no semantic matches at all", YELLOW)
+            for i, (score, ans, inst) in enumerate(results):
                 if score >= SEMANTIC_SEARCH_THRESHOLD and ans and len(ans) > 10:
                     if self._is_relevant_answer(prompt, ans):
+                        log(f"  ✓ semantic[{i+1}] score={score:.3f} passes filter → candidate", GREEN)
                         yield f"semantic[{i+1}]", ans
+                    else:
+                        log(f"  ✗ semantic[{i+1}] rejected by relevance filter "
+                            f"(story/irrelevant answer)", YELLOW)
+                else:
+                    log(f"  →  semantic[{i+1}] score={score:.3f} below threshold "
+                        f"{SEMANTIC_SEARCH_THRESHOLD} or too short", GRAY)
             # Relaxed threshold
-            for i, (score, ans) in enumerate(results):
+            for i, (score, ans, inst) in enumerate(results):
                 if score >= SEMANTIC_SEARCH_THRESHOLD * SEMANTIC_SEARCH_RELAXED and ans and len(ans) > 10:
                     if self._is_relevant_answer(prompt, ans):
+                        log(f"  ✓ semantic-relaxed[{i+1}] score={score:.3f} passes filter → candidate", GREEN)
                         yield f"semantic-relaxed[{i+1}]", ans
+                    else:
+                        log(f"  ✗ semantic-relaxed[{i+1}] rejected by relevance filter", YELLOW)
+                else:
+                    log(f"  →  semantic-relaxed[{i+1}] score={score:.3f} below relaxed "
+                        f"threshold {SEMANTIC_SEARCH_THRESHOLD * SEMANTIC_SEARCH_RELAXED:.2f} "
+                        f"or too short", GRAY)
 
         def gen_pool():
             """Generate candidates from word-overlap pool matching."""
             if not self.pool_pairs:
+                log("  →  pool_pairs empty", GRAY)
                 return
-            matched = self._match_pool(prompt)
+            log("  🗂️  searching pool pairs (word overlap)...", CYAN)
+            matched = self._match_pool(prompt, log=log)
             if matched and len(matched) > 10:
                 yield "pool_match", matched
+            else:
+                log("  →  pool matching found nothing above threshold", YELLOW)
 
         def gen_knowledge():
             """Generate candidates from knowledge base."""
             if not self.knowledge_index:
+                log("  →  knowledge base not loaded", GRAY)
                 return
+            log("  📚 knowledge base search...", CYAN)
             results = self.knowledge_index.search(prompt, top_k=KNOWLEDGE_SEARCH_TOP_K)
+            if not results:
+                log("  →  no knowledge base hits", YELLOW)
             for i, res in enumerate(results):
                 ans = (res.get('definition') or res.get('answer') or res.get('object') or '')
                 if ans and len(ans) > 10:
+                    log(f"  ✓ knowledge[{i+1}] -> {ans[:90]}", GREEN)
                     yield f"knowledge[{i+1}]", ans
 
         def gen_reasoning():
             """Generate candidates from deep reasoning."""
             if not self.reasoner:
+                log("  →  deep reasoner not loaded", GRAY)
                 return
+            log("  🧩 deep reasoning engine...", CYAN)
             reasoned = self.reasoner.reason(prompt, knowledge_index=self.knowledge_index)
             if reasoned and len(reasoned) > 10:
+                log(f"  ✓ reasoning produced: {reasoned[:90]}", GREEN)
                 yield "reasoning", reasoned
+            else:
+                log("  →  reasoner produced nothing usable", YELLOW)
 
         def gen_creative():
             """Generate candidates from creative engine."""
             if not self.creative:
+                log("  →  creative engine not loaded", GRAY)
                 return
+            log("  🎨 creative engine...", CYAN)
             creative = self.creative.generate(prompt, reservoir=self.reservoir_samples)
             if creative and len(creative) > 20:
+                log(f"  ✓ creative produced: {creative[:90]}", GREEN)
                 yield "creative", creative
+            else:
+                log("  →  creative produced nothing usable", YELLOW)
 
         def gen_neural():
             """Generate candidate from neural engine."""
             if not self.model:
+                log("  →  model (neural engine) not loaded", GRAY)
                 return
+            log("  🧠 neural engine: embed → route → generate...", CYAN)
             response = self.model.generate(prompt, max_tokens)
             if response and len(response) > 10:
+                log(f"  ✓ neural engine produced: {response[:120]}", GREEN)
                 yield "neural", response
+            else:
+                log("  →  neural engine produced nothing usable", YELLOW)
+
+        def gen_aggregate():
+            """Generate a fact-compiled answer: when no single direct QA pair
+            answers the query, gather every mention of the query's content
+            words from the model's own data and join the best snippets into
+            one honest answer (real corpus sentences only)."""
+            if not self.fact_index:
+                log("  →  fact index not built", GRAY)
+                return
+            vocab = self._get_vocab()
+            golden = _content_toks(vocab._tokenize(prompt))
+            golden = [t for t in golden if len(t) > 1]
+            if not golden:
+                log("  →  no entity terms to aggregate on", GRAY)
+                return
+            if any(kw in prompt.lower() for kw in CREATIVE_KEYWORDS):
+                log("  →  creative prompt — skipping fact aggregation", GRAY)
+                return
+            log(f"  🗂️  FACT AGGREGATION: compiling mentions of "
+                f"{golden}...", CYAN)
+            compiled = self._compile_facts(golden)
+            if compiled and len(compiled) >= AGGREGATE_MIN_CHARS:
+                log(f"  ✓ facts compiled -> {compiled[:120]}...", GREEN)
+                yield "fact-agg", compiled
+            else:
+                log("  →  no usable fact snippets found", YELLOW)
 
         def gen_predictor():
             """Generate candidate from predictor."""
             if not self.predictor:
+                log("  →  predictor not loaded", GRAY)
                 return
             context = self._build_context(prompt, use_history)
+            log("  📝 predictor: pattern-based generation...", CYAN)
             response = self.predictor.reply(context, max_tokens, temperature)
             if response:
+                log(f"  ✓ predictor produced: {response[:120]}", GREEN)
                 yield "predictor", response
+            else:
+                log("  →  predictor produced nothing", YELLOW)
 
         # ============================================================
         # MAIN LOOP: every candidate goes through the full gate
         # ============================================================
         all_generators = [
+            ("CORTEX ATTENTION", gen_cortex),
             ("SEMANTIC RETRIEVAL", gen_semantic),
             ("POOL MATCHING", gen_pool),
             ("KNOWLEDGE BASE", gen_knowledge),
             ("DEEP REASONING", gen_reasoning),
+            ("FACT AGGREGATION", gen_aggregate),
             ("CREATIVE GENERATION", gen_creative),
             ("NEURAL ENGINE", gen_neural),
             ("PREDICTOR FALLBACK", gen_predictor),
@@ -978,32 +1284,60 @@ class ChatSession:
         best_effort = None   # (score, text) highest-scoring candidate seen
         best_effort_score = 0.0
 
+        # Wire the live logger into sub-engines so THEIR internals stream too
+        if self.predictor is not None:
+            self.predictor._log = log if verbose else None
+        if self.model is not None and self.model.neural_engine is not None:
+            self.model.neural_engine.set_logger(log if verbose else None)
+
+        # ---- Query analysis: what the model thinks it heard ----------
+        _qv = self._get_vocab()
+        _qtoks = _qv._tokenize(prompt)
+        log("  🧠 QUERY ANALYSIS", CYAN)
+        log(f"     raw tokens: {_qtoks[:40]}")
+        _content = [t for t in _qtoks if t not in _STOPWORDS] or _qtoks
+        log(f"     content words (stopwords removed): {_content[:40]}")
+        log(f"     plan: try {len(all_generators)} retrieval paths in priority "
+            f"order; every output must pass virtual simulation", GRAY)
+
+        import time as _clock
         for priority_name, gen_func in all_generators:
             log_step(f"PRIORITY: {priority_name}", "")
+            _t0 = _clock.time()
+            _yielded = False
             try:
                 for source_name, candidate in gen_func():
+                    _yielded = True
                     final_text = gate_candidate(source_name, candidate)
                     if final_text is not None:
+                        log(f"  ✓ {priority_name} returned ANSWER after "
+                            f"{_clock.time() - _t0:.2f}s", GREEN)
                         log(f"  FINAL: {final_text[:200]}", GREEN)
                         log(f"{'='*60}")
                         return final_text
             except Exception as e:
                 log(f"  ✗ {priority_name} error: {e}", YELLOW)
                 continue
+            if not _yielded:
+                log(f"  → {priority_name}: nothing found "
+                    f"({_clock.time() - _t0:.2f}s) → moving to next priority", YELLOW)
 
         # ============================================================
         # NOTHING PASSED THE FULL GATE.
         # Fall back to the highest-scoring candidate (real model data,
         # never a hardcoded string).
         # ============================================================
-        log("  ✗ ALL CANDIDATES FAILED GATE — returning highest-scoring "
-            "candidate from the model", YELLOW)
+        log("  ✗ ALL CANDIDATES FAILED GATE — returning best relevant candidate "
+            "from the model, or an honest refusal", YELLOW)
         log(f"{'='*60}")
         if best_effort is not None:
             return best_effort
-        # Very last resort: reuse the user's own words is NOT intelligence;
-        # if the model has genuinely nothing, say so plainly in model data.
-        return ""
+        # Honest refusal: the model genuinely has no relevant data for this
+        # query.  Returning fabricated content would be a lie — this plain
+        # message is the only template, and it is NOT a factual answer.
+        log("  → model has nothing relevant in its trained data", YELLOW)
+        return ("I don't have a reliable answer for that from my trained data "
+                "yet. If you teach me a dataset with it, I'll answer correctly.")
 
     def _get_vocab(self):
         if self.predictor and self.predictor.vocab:
@@ -1011,6 +1345,69 @@ class ChatSession:
         if self.model and self.model.vocab:
             return self.model.vocab
         return Vocabulary()
+
+    def _ensure_cortex(self):
+        """Lazily build the training-free CORTEX attention net from the
+        model's OWN baked-in data (no external files, no gradients)."""
+        if self.cortex is not None:
+            return not isinstance(self.cortex, Exception)
+        if not self.enable_cortex:
+            return False
+        try:
+            from .memory_transformer import MemoryTransformer
+            vocab = self._get_vocab()
+            mt = MemoryTransformer(vocab, dim=min(256, self.dim or 256),
+                                   top_k=12, gate_threshold=0.3)
+            info = mt.build(self.reservoir_samples, self.qa_bank,
+                            None, max_memories=8000)
+            self.cortex = mt
+            print(f"[ChatSession] CORTEX attention net built: {info}")
+            return True
+        except Exception as e:
+            self.cortex = Exception(str(e))
+            print(f"[ChatSession] CORTEX attention net unavailable: {e}")
+            return False
+
+    def _smalltalk_reply(self, prompt):
+        """Return a real greeting answer from training data when the prompt
+        is an exact smalltalk phrase, else None."""
+        norm = str(prompt).strip().lower().rstrip('?!., ')
+        if norm not in SMALLTALK_PHRASES:
+            return None
+        if not (self.semantic_index and self.semantic_index._built):
+            return None
+        vocab = self._get_vocab()
+        seen = set()
+        picked = []
+        for probe in SMALLTALK_PROBES:
+            r = self.semantic_index.search(probe, vocab, top_k=3)
+            for _s, _a, _i in r:
+                if _a not in seen:
+                    seen.add(_a)
+                    picked.append(_a)
+        if not picked:
+            return None
+        return picked[0]
+
+    def _decompose_multi(self, prompt):
+        """Split a compound prompt ("who is X and what is Y?") into
+        independent sub-questions that each begin with an interrogative
+        head.  Returns [] when the prompt is a single question."""
+        import re
+        s = str(prompt).strip().split('\n')[0]
+        if not s:
+            return []
+        heads = '|'.join(_SUBQ_HEADS)
+        parts = re.split(
+            rf'(?i)\s+(?:and|&|,)\s+(?=\b(?:{heads})\b)', s)
+        if len(parts) < 2:
+            return []
+        out = []
+        for p in parts:
+            p = p.strip().strip('?')
+            if len(p.split()) >= 3:
+                out.append(p)
+        return out if len(out) >= 2 else []
 
     def get_model_info(self):
         if self.model:
@@ -1022,9 +1419,56 @@ class ChatSession:
             return self.model.visualize_network()
         return "Model not loaded"
 
+    def _ensure_cde(self, verbose=False):
+        """Lazily build the Cognitive Discovery Engine core over this session."""
+        if self.cde is not None:
+            return not isinstance(self.cde, Exception)
+        try:
+            from .cde import NovaCoreCDE
+            engine = NovaCoreCDE(self)
+            engine.trace_enabled = bool(verbose)
+            self.cde = engine
+            print("[ChatSession] CDE cognitive core ready")
+            return True
+        except Exception as e:
+            self.cde = Exception(str(e))
+            print(f"[ChatSession] CDE core unavailable: {e}")
+            return False
+
+    def generate_cde(self, prompt, max_tokens=None, temperature=None,
+                     use_history=True, verbose=False):
+        """Generate via the unified Cognitive Discovery Engine. Everything
+        (think/reason/plan/simulate/attack/verify/retry/synthesize) happens
+        inside the core; only the final answer is returned."""
+        if not self._loaded:
+            self.load()
+        if not self._ensure_cde(verbose=verbose):
+            return self.generate(prompt, max_tokens=max_tokens,
+                                 temperature=temperature,
+                                 use_history=use_history, verbose=verbose)
+        try:
+            result = self.cde.run(prompt)
+            if verbose and result.get('trace'):
+                print(f"\n{chr(37)}--- CDE trace ---")
+                for line in result['trace']:
+                    print(line)
+                print(f"{chr(37)} route={result.get('route')} "
+                      f"confidence={result.get('confidence')}\n")
+            return result.get('answer', _HONEST_REFUSAL)
+        except Exception as e:
+            print(f"[ChatSession] CDE run error: {e} — falling back to legacy")
+            return self.generate(prompt, max_tokens=max_tokens,
+                                 temperature=temperature,
+                                 use_history=use_history, verbose=verbose)
+
     def chat(self, prompt, max_tokens=None, temperature=None, verbose=False):
         self.history.append({"role": "user", "content": prompt})
-        reply = self.generate(prompt, max_tokens, temperature, use_history=True, verbose=verbose)
+        if self.enable_cde and self._ensure_cde(verbose=verbose):
+            reply = self.generate_cde(prompt, max_tokens, temperature,
+                                      use_history=True, verbose=verbose)
+        else:
+            reply = self.generate(prompt, max_tokens, temperature,
+                                  use_history=True, verbose=verbose)
         self.history.append({"role": "assistant", "content": reply})
         if len(self.history) > self.max_history * 2:
             self.history = self.history[-self.max_history * 2:]
@@ -1053,10 +1497,112 @@ class ChatSession:
         return True
 
     # ------------------------------------------------------------------
+    # Fact aggregation — compile an answer from every mention of the
+    # query's content words in the model's own data.
+    # ------------------------------------------------------------------
+    def _compile_facts(self, golden):
+        """Collect the best fact snippets that mention the query's content
+        words and join them into one honest answer.  Every snippet is a real
+        sentence from the model's training data — nothing is fabricated."""
+        expanded = {g: {g} | set(_FACT_EXPANSION.get(g, ())) for g in golden}
+        weak = {g for g in golden if g in _FACT_EXPANSION}
+        non_weak = set(golden) - weak
+
+        def covers_g(inst_terms, g):
+            """Does the instruction's terms cover golden term g?  Ambiguous
+            abbreviations ('pm') must be matched by their EXPANDED meaning
+            (prime/minister) — a timezone instruction containing 'pm' alone
+            does not cover 'pm = prime minister'."""
+            if g in _FACT_EXPANSION:
+                return bool(inst_terms & (expanded[g] - {g}))
+            return g in inst_terms
+
+        cands = {}
+        for g in golden:
+            for _inst_terms, _ans in self.fact_index.get(g, ()):
+                key = _ans[:80]
+                if key not in cands:
+                    cands[key] = (_inst_terms, _ans)
+
+        if not cands:
+            return ''
+
+        tier_a = []   # instruction covers EVERY golden term
+        tier_b = []   # instruction covers at least one non-abbreviation golden term
+        for (_inst_terms, _ans) in cands.values():
+            if all(covers_g(_inst_terms, g) for g in golden):
+                tier_a.append((_inst_terms, _ans))
+            elif non_weak and _inst_terms & non_weak:
+                tier_b.append((_inst_terms, _ans))
+
+        all_pairs = sorted(
+            [(True, it, a) for it, a in tier_a]
+            + [(False, it, a) for it, a in tier_b],
+            key=lambda r: (not r[0]),
+        )
+
+        scored = []
+        for tier_flag, _inst_terms, _ans in all_pairs:
+            inst_overlap = sum(1 for g in golden if covers_g(_inst_terms, g))
+            al = _ans.lower()
+            ans_overlap = sum(1 for g in golden if g in al)
+            score = (10 if tier_flag else 0) + 3 * inst_overlap + 2 * ans_overlap
+            code_hint = any(k in (' '.join(_inst_terms) + ' ' + al)
+                            for k in ('def ', '"""', 'function', 'lambda',
+                                      'print(', '#', 'return ', 'armstrong '
+                                      'number', 'if __name__'))
+            if code_hint:
+                score -= 40
+            scored.append((score, len(_ans), _ans))
+
+        scored.sort(key=lambda r: (-r[0], r[1]))
+
+        picked = []
+        used = set()
+        total = 0
+        for _score, _ln, _ans in scored:
+            _key = ' '.join(_ans.split()[:8])
+            if _key in used:
+                continue
+            used.add(_key)
+            picked.append(_ans)
+            total += _ln
+            if len(picked) >= AGGREGATE_TOP_N or total > AGGREGATE_MAX_CHARS:
+                break
+
+        if not picked:
+            return ''
+
+        cleaned = [p.strip() for p in picked if p.strip()]
+        if not cleaned:
+            return ''
+
+        # GATE: the aggregated answer must actually USE the query's terms.
+        # Otherwise ("indian systist", "who is neil armstrong") we would dump
+        # incidental snippets that merely contain one query word — garbage.
+        if non_weak:
+            joined = ' '.join(cleaned).lower()
+            hit = sum(1 for g in non_weak if g in joined)
+            need = max(1, int(0.6 * len(non_weak)))
+            if hit < need:
+                return ''
+            if len(non_weak) >= 2:
+                tail = golden[-1]
+                if tail not in _FACT_EXPANSION and tail not in joined:
+                    return ''
+
+        if len(cleaned) == 1:
+            return cleaned[0]
+        return ("Here is what my trained data mentions about this:\n"
+                + '\n\n'.join(cleaned))
+
+    # ------------------------------------------------------------------
     # Word-overlap pool matching (secondary fallback)
     # ------------------------------------------------------------------
-    def _match_pool(self, query):
+    def _match_pool(self, query, log=None):
         if not self.pool_pairs:
+            if log is not None:
+                log("     · pool_pairs empty — skipping")
             return ''
 
         query_lower = query.lower().strip().rstrip('?!.')
@@ -1073,8 +1619,13 @@ class ChatSession:
         if not query_content:
             query_content = query_words
 
+        if log is not None:
+            log(f"     · scanning {len(self.pool_pairs)} pool pairs "
+                f"(content words: {sorted(query_content)[:10]})")
+
         best_score = 0
         best_answer = ''
+        best_instruction = ''
 
         for instruction, answer in self.pool_pairs:
             if not instruction or not answer:
@@ -1083,6 +1634,8 @@ class ChatSession:
             inst_words = set(inst_lower.split()) - stop_words
 
             if query_lower == inst_lower:
+                if log is not None:
+                    log(f"     · EXACT match: '{instruction[:80]}'")
                 return answer
 
             if query_content:
@@ -1099,6 +1652,14 @@ class ChatSession:
                 if score > best_score:
                     best_score = score
                     best_answer = answer
+                    best_instruction = instruction
+
+        if log is not None:
+            log(f"     · pool best score={best_score:.3f} (threshold={POOL_MATCH_MIN_SCORE})")
+            if best_instruction:
+                log(f"       matched instruction: '{best_instruction[:90]}'")
+            elif best_answer:
+                log(f"       matched answer start: '{best_answer[:90]}'")
 
         if best_score >= POOL_MATCH_MIN_SCORE and best_answer:
             return best_answer

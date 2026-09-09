@@ -14,6 +14,8 @@ class ReservoirSampler:
             k = get_default('reservoir_sample_size')
         if seed is None:
             seed = get_default('reservoir_seed')
+        if seed is None:
+            seed = 42
         self.k = k
         self.reservoir = []
         self.seen = 0

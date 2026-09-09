@@ -52,7 +52,10 @@ class PatternExtractor:
             if len(pat) >= pat_cap:
                 break
             for i in range(end):
-                pat[tuple(tokens[i:i + n])] += 1
+                # Plain dicts (loaded models keep RAM-low plain dict) don't have
+                # Counter.__missing__; use get() so any mapping works.
+                gram = tuple(tokens[i:i + n])
+                pat[gram] = pat.get(gram, 0) + 1
 
         # Co-occurrence within window — sliding window (near-linear).
         # CAP at 500K entries to prevent MemoryError on large corpora.
@@ -115,7 +118,10 @@ class PatternExtractor:
     def top_patterns(self, k=None):
         from ..config import get_default
         k = k if k is not None else get_default('pattern_top_k')
-        return self.patterns.most_common(k)
+        if hasattr(self.patterns, "most_common"):
+            return self.patterns.most_common(k)
+        # Plain dict (loaded models): drop the Counter-only API and rank manually.
+        return sorted(self.patterns.items(), key=lambda x: -x[1])[:k]
 
     def encode(self, dim=None):
         """Encode all patterns into a fixed-size weight vector."""

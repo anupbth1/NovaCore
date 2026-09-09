@@ -1,0 +1,1 @@
+"""NovaCore tools package — internal tool layer of the model core."""

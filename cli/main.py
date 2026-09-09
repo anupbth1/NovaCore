@@ -5,6 +5,18 @@ import sys
 import argparse
 import random
 
+# Set BLAS/vectorized thread counts BEFORE numpy is first imported so the
+# whole process (and every worker) uses ~90% of available cores.
+if os.environ.get('NOVACORE_NOTUNE') is None:
+    try:
+        _nc_cores = max(1, int(os.cpu_count() or 1) - 1)
+        for _nc_k in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS',
+                      'OPENBLAS_NUM_THREADS', 'NUMEXPR_NUM_THREADS',
+                      'VECLIB_MAXIMUM_THREADS'):
+            os.environ.setdefault(_nc_k, str(_nc_cores))
+    except Exception:
+        pass
+
 import numpy as np
 from tqdm import tqdm
 
@@ -108,8 +120,38 @@ def build_parser():
     chat.add_argument("--tokens", "-t", type=int, default=_tokens, help="Max tokens per reply")
     chat.add_argument("--temperature", type=float, default=_temp, help="Sampling temp")
     chat.add_argument("--prompt", "-p", default=None, help="Single prompt mode (non-interactive, then exit)")
-    chat.add_argument("--verbose", "-v", action="store_true", help="Show detailed reasoning logs (gray)")
+    chat.add_argument("--verbose", "-v", dest="verbose", action="store_true", default=True,
+                      help="Show step-by-step reasoning logs (ON by default)")
+    chat.add_argument("--quiet", "-q", dest="verbose", action="store_false",
+                      help="Suppress step-by-step logs")
+    chat.add_argument("--cortex", dest="cortex", action="store_true",
+                      help="Enable CORTEX attention recall head (training-free)")
+    chat.add_argument("--cde", dest="cde", action="store_true",
+                      help="Enable the unified Cognitive Discovery Engine "
+                           "(merged think/reason/plan/simulate/attack/verify)")
     chat.set_defaults(remaining=[])
+
+    # cortex - training-free attention memory net (bench + chat)
+    ctx = sub.add_parser("cortex", help="Training-free linear-attention memory net (built from weights)")
+    ctx.set_defaults(cortex_cmd="chat")
+    ctx_sub = ctx.add_subparsers(dest="cortex_cmd")
+    ctx_chat = ctx_sub.add_parser("chat", help="Chat using the attention memory net")
+    ctx_chat.add_argument("--weights", "-w", required=True, help="Weights dir")
+    ctx_chat.add_argument("--prompt", "-p", default=None, help="Prompt text (non-interactive)")
+    ctx_chat.add_argument("--max-tokens", "-t", type=int, default=120, help="Max generated tokens")
+    ctx_chat.add_argument("--temperature", type=float, default=0.7, help="Sampling temperature")
+    ctx_chat.add_argument("--dim", type=int, default=256, help="Attention embedding dim")
+    ctx_chat.add_argument("--topk", type=int, default=12, help="Attention top-k memories")
+    ctx_chat.add_argument("--gate", type=float, default=0.35, help="Attention gate threshold")
+    ctx_chat.add_argument("--max-memories", type=int, default=25000, help="Memory snippet cap")
+    ctx_bench = ctx_sub.add_parser("bench", help="Benchmark: cortex attention net vs legacy chat path")
+    ctx_bench.add_argument("--weights", "-w", required=True, help="Weights dir")
+    ctx_bench.add_argument("--questions", "-q", required=True, help="Comma-separated questions")
+    ctx_bench.add_argument("--max-tokens", "-t", type=int, default=100, help="Max generated tokens")
+    ctx_bench.add_argument("--dim", type=int, default=256, help="Attention embedding dim")
+    ctx_bench.add_argument("--topk", type=int, default=12, help="Attention top-k memories")
+    ctx_bench.add_argument("--gate", type=float, default=0.35, help="Attention gate threshold")
+    ctx_bench.add_argument("--max-memories", type=int, default=25000, help="Memory snippet cap")
 
     # train - unified model creation (HF + local + multi + mixed + new/load)
     tr = sub.add_parser("train", help="Create/expand a model from HF and/or local datasets (config-based)")
@@ -168,6 +210,13 @@ def build_parser():
     tr.add_argument("--vocab-size", type=int, default=None, help="Vocab size (overrides config)")
     tr.add_argument("--max-tokens", type=int, default=None, help="Max tokens for chat (overrides config)")
     tr.add_argument("--temperature", type=float, default=None, help="Sampling temp (overrides config)")
+
+    # HW / speed controls (train + train-pools)
+    for _parser in (tr, trp):
+        _parser.add_argument("--workers", type=int, default=None,
+                             help="Parallel extract worker processes (auto ~90% of cores; 1 = off)")
+        _parser.add_argument("--cpu-only", action="store_true", default=False,
+                             help="Force CPU path (no GPU acceleration)")
 
     # HF group
     hf = sub.add_parser("hf", help="Hugging Face dataset operations")
@@ -292,6 +341,10 @@ def _resolve_rows(max_rows):
 def cmd_train(args):
     """Unified model creation/expansion from HF and/or local datasets."""
     import re
+
+    # --cpu-only: block GPU acceleration (SVD etc.) for reproducibility
+    if getattr(args, 'cpu_only', False):
+        os.environ['NOVACORE_CPU_ONLY'] = '1'
 
     # Resolve strict config (--config file + manual flags, else error)
     cfg = _resolve_model_config(args)
@@ -731,6 +784,7 @@ def cmd_train(args):
             _chain_streams(), out_dir, dim, layers, vocab_size, max_tokens,
             temperature, source="+".join(sources),
             merge_existing=bool(args.load_model),
+            workers=args.workers,
         )
     else:
         # All local (small) – use the list-based path
@@ -1076,6 +1130,10 @@ def cmd_chat(args):
     def _start_session(weights_dir):
         try:
             s = ChatSession(weights_dir, temperature=args.temperature if args.temperature is not None else _meta_temp)
+            if hasattr(args, 'cortex') and args.cortex:
+                s.enable_cortex = True
+            if hasattr(args, 'cde') and args.cde:
+                s.enable_cde = True
             s.load()
             return s
         except RuntimeError as e:
@@ -1290,8 +1348,57 @@ def _cmd_hf_stream(args, loader):
         print(f"  [{i+1}] {t[:100]}")
 
 
+_REASONING_FIELDS = ('causal_chains', 'logical_patterns', 'comparison_chains',
+                     'explanation_chains', 'problem_solutions', 'analogies')
+_CREATIVE_FIELDS = ('story_openings', 'story_middles', 'story_endings',
+                    'poem_structures', 'metaphors', 'descriptions',
+                    'dialogue_patterns', 'emotional_arcs')
+
+
+def _extract_docs_worker(job):
+    """Worker: (vocab_docs, pat_docs, ngram) -> (vocab_freqs, pattern_counts).
+    Pure per-document extraction; driver merges Counters (identical result to
+    the sequential loop, but computed across cores)."""
+    from collections import Counter as _Counter
+    vocab_docs, pat_docs, ngram = job
+    freq = _Counter()
+    pat = _Counter()
+    if vocab_docs:
+        from novacore.tokenizer.vocab import Vocabulary
+        _vocab = Vocabulary(vocab_size=50000)
+        for d in vocab_docs:
+            for t in _vocab._tokenize(d):
+                freq[t] += 1
+    if pat_docs:
+        from novacore.core.patterns import PatternExtractor
+        ext = PatternExtractor(ngram_range=tuple(ngram))
+        for d in pat_docs:
+            ext.update(d)
+        pat = ext.patterns
+    return freq, pat
+
+
+def _extract_reasoning_worker(docs):
+    """Worker: extract reasoning patterns from a doc slice -> mergeable lists."""
+    from novacore.core.reasoning_engine import ReasoningPatternExtractor
+    r = ReasoningPatternExtractor()
+    for d in docs:
+        r.extract_from_text(d)
+    return {k: getattr(r, k) for k in _REASONING_FIELDS}
+
+
+def _extract_creative_worker(docs):
+    """Worker: extract creative patterns from a doc slice -> mergeable lists."""
+    from novacore.core.creative_engine import CreativePatternExtractor
+    c = CreativePatternExtractor()
+    for d in docs:
+        c.extract_from_text(d)
+    return {k: getattr(c, k) for k in _CREATIVE_FIELDS}
+
+
 def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
-                       temperature, source="", column=None, merge_existing=False):
+                       temperature, source="", column=None, merge_existing=False,
+                       workers=None):
     """Single-pass streaming training – memory-efficient for millions of docs.
 
     Vocab building, n-gram pattern extraction, and reservoir sampling all
@@ -1304,10 +1411,28 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
     import gc
     import re
 
+    # Reproducible builds: global numpy/random must be seeded (training_upgrades
+    # uses np.random.choice / np.random.randn outside its own RandomState).
+    _seed = int(_gd('reservoir_seed') or _gd('seed') or 42)
+    np.random.seed(_seed)
+    random.seed(_seed)
+    del _seed
+
     log = Logger()
 
     from novacore.auto_tuner import get_tuner
     tuner = get_tuner()
+    tuner.apply_threading()
+    # Worker processes: auto (~90% cores) unless CLI --workers set.
+    try:
+        _workers = int(workers) if workers else tuner.workers
+    except Exception:
+        _workers = tuner.workers
+    if _workers < 1:
+        _workers = 1
+    print(f"[NovaCore] HW: CPU={tuner.cpu_count} RAM={round(tuner.total_ram/1024**3,1)}GB "
+          f"GPU={'YES ('+tuner.gpu_name+')' if tuner.gpu_available else 'no'} "
+          f"threads={tuner.num_threads} workers={_workers}", flush=True)
     # Auto-tune config knobs based on live hardware
     if _gd('pattern_sample_cap') is not None:
         _pat_cap = min(_gd('pattern_sample_cap'), tuner.pattern_sample_cap)
@@ -1401,20 +1526,60 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
     from time import time as _time
     _t0 = _time()
     count = 0
+
+    # ---- Parallel encode support (vocab freqs + n-gram patterns) ------
+    # Deterministic map-reduce: worker per chunk, driver merges Counters.
+    # Fallback to the original sequential loop whenever workers fail.
+    from collections import deque as _deque
+    from multiprocessing import Pool as _Pool
+    _use_parallel = (_workers > 1 and prev_vocab is None)
+    _pool = None
+    if _use_parallel:
+        try:
+            _pool = _Pool(processes=_workers)
+        except Exception:
+            _pool = None
+    _chunk_rows = 20000
+    _chunk = []
+    _futures = _deque()
+    _vocab_fed = 0
+    _pat_fed = 0
+
+    def _flush_chunk():
+        nonlocal _vocab_fed, _pat_fed
+        if not _chunk:
+            return
+        vd = _chunk[: max(0, _vocab_cap - _vocab_fed)]
+        pd = _chunk[: max(0, _pat_cap - _pat_fed)]
+        _vocab_fed += len(vd)
+        _pat_fed += len(pd)
+        job = (vd, pd, _ngram)
+        if _pool is not None:
+            _futures.append(_pool.apply_async(_extract_docs_worker, (job,)))
+        else:
+            _futures.append(_extract_docs_worker(job))
+        _chunk.clear()
+        # Bound outstanding work: keep <=4 promises when parallel,
+        # resolve immediately in the serial fallback.
+        while len(_futures) >= (4 if _pool is not None else 1):
+            _resolve_one()
+
+    def _resolve_one():
+        item = _futures.popleft()
+        try:
+            freq, patm = item.get() if hasattr(item, 'get') else item
+        except Exception as exc:
+            print(f"[NovaCore] parallel worker error (continuing): {exc}",
+                  file=sys.stderr, flush=True)
+            freq, patm = {}, {}
+        if prev_vocab is None:
+            vocab.freqs.update(freq)
+        extractor.patterns.update(patm)
+
     for text in text_iter:
         if not isinstance(text, str) or not text:
             continue
-        # Vocab: feed first N texts
-        if count < _vocab_cap:
-            if prev_vocab is not None:
-                vocab.grow([text])
-            else:
-                for tok in vocab._tokenize(text):
-                    vocab.freqs[tok] += 1
-        # Patterns: feed first M texts
-        if count < _pat_cap:
-            extractor.update(text)
-        # Knowledge extraction: feed ALL texts
+        # Knowledge extraction: feed ALL texts (stateful, kept sequential)
         if knowledge_extractor:
             knowledge_extractor.learn_from_document(text, f"doc_{count}")
         # Reservoir: feed ALL texts
@@ -1430,7 +1595,24 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
         if count % 200000 == 0:
             el = _time() - _t0
             rate = count / max(1, el)
-            print(f"    · streaming {count} docs ({el:.0f}s, ~{rate:.0f} docs/s)", flush=True)
+            print(f"    · streaming {count} docs ({el:.0f}s, ~{rate:.0f} docs/s, "
+                  f"parallel={'on' if _pool else 'off'})", flush=True)
+        # Vocab + patterns:
+        #   parallel  -> accumulate chunk, extract in worker processes
+        #   sequential-> original per-doc path (expand models / worker 1)
+        if _use_parallel:
+            _chunk.append(text)
+            if len(_chunk) >= _chunk_rows:
+                _flush_chunk()
+        else:
+            if count < _vocab_cap:
+                if prev_vocab is not None:
+                    vocab.grow([text])
+                else:
+                    for tok in vocab._tokenize(text):
+                        vocab.freqs[tok] += 1
+            if count < _pat_cap:
+                extractor.update(text)
         # Free memory periodically for long streams + auto-tuner guard
         _mem_cleanup_interval = _gd('memory_cleanup_interval')
         if count % _mem_cleanup_interval == 0:
@@ -1442,9 +1624,14 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
                     sampler.reservoir = sampler.reservoir[:tuner.reservoir_size // 2]
                     gc.collect()
             if tuner.mem_pressure() > 0.90:
-                print(f"[NovaCore] ⚠ AUTO-GUARD: memory at {tuner.mem_pressure()*100:.0f}%; reducing reservoir + vocab feed")
+                print(f"[NovaCore] AUTO-GUARD: memory at {tuner.mem_pressure()*100:.0f}%; reducing reservoir + vocab feed")
                 # Force vocab cap reduction for remaining stream
                 _vocab_cap = min(_vocab_cap, count + 1000)
+
+    if _use_parallel:
+        _flush_chunk()
+        while _futures:
+            _resolve_one()
 
     _elapsed = _time() - _t0
     n_docs = count
@@ -1519,17 +1706,46 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
 
         import time as _time
 
+        def _parallel_lists(worker, docs, fields):
+            """Map `worker` over sliced docs, merge list-fields, keep order."""
+            parts = []
+            _slice = 20000
+            if _pool is not None:
+                _futs = []
+                for _s in range(0, len(docs), _slice):
+                    _futs.append(_pool.apply_async(worker, (docs[_s:_s + _slice],)))
+                for _f in _futs:
+                    try:
+                        parts.append(_f.get())
+                    except Exception as _exc:
+                        print(f"[NovaCore] parallel extract error: {_exc}",
+                              file=sys.stderr, flush=True)
+            else:
+                for _s in range(0, len(docs), _slice):
+                    parts.append(worker(docs[_s:_s + _slice]))
+            merged = {f: [] for f in fields}
+            for p in parts:
+                for f in fields:
+                    merged[f].extend(p.get(f, []))
+            return merged
+
         log.step("Extracting reasoning patterns...")
         reasoning_ext = ReasoningPatternExtractor()
         _reasoning_cap = min(_gd('reasoning_extract_cap'), len(sample_list))
         _r_t0 = _time.time()
-        for _ri, text in enumerate(sample_list[:_reasoning_cap]):
-            reasoning_ext.extract_from_text(text)
-            if (_ri + 1) % 5000 == 0 or (_ri + 1) == _reasoning_cap:
-                _elapsed = _time.time() - _r_t0
-                _rate = (_ri + 1) / _elapsed if _elapsed > 0 else 0
-                _eta = (_reasoning_cap - _ri - 1) / _rate if _rate > 0 else 0
-                print(f"    · reasoning: {_ri + 1}/{_reasoning_cap} ({_elapsed:.0f}s, ~{_rate:.0f}/s, eta ~{_eta:.0f}s)")
+        if _reasoning_cap and _use_parallel:
+            merged = _parallel_lists(
+                _extract_reasoning_worker, sample_list[:_reasoning_cap],
+                _REASONING_FIELDS)
+            for _f in _REASONING_FIELDS:
+                setattr(reasoning_ext, _f, merged[_f])
+            print(f"    · reasoning: parallel over {_reasoning_cap} docs "
+                  f"({_time.time() - _r_t0:.0f}s)")
+        else:
+            for _ri, text in enumerate(sample_list[:_reasoning_cap]):
+                reasoning_ext.extract_from_text(text)
+            _r_el = _time.time() - _r_t0
+            print(f"    · reasoning: {_reasoning_cap} docs ({_r_el:.0f}s)")
         reasoner = DeepReasoner()
         reasoner.patterns = reasoning_ext
         reasoner.save_patterns(os.path.join(out_dir, "reasoning_patterns.json"))
@@ -1540,13 +1756,19 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
         creative_ext = CreativePatternExtractor()
         _creative_cap = min(_gd('creative_extract_cap'), len(sample_list))
         _c_t0 = _time.time()
-        for _ci, text in enumerate(sample_list[:_creative_cap]):
-            creative_ext.extract_from_text(text)
-            if (_ci + 1) % 5000 == 0 or (_ci + 1) == _creative_cap:
-                _elapsed = _time.time() - _c_t0
-                _rate = (_ci + 1) / _elapsed if _elapsed > 0 else 0
-                _eta = (_creative_cap - _ci - 1) / _rate if _rate > 0 else 0
-                print(f"    · creative: {_ci + 1}/{_creative_cap} ({_elapsed:.0f}s, ~{_rate:.0f}/s, eta ~{_eta:.0f}s)")
+        if _creative_cap and _use_parallel:
+            merged = _parallel_lists(
+                _extract_creative_worker, sample_list[:_creative_cap],
+                _CREATIVE_FIELDS)
+            for _f in _CREATIVE_FIELDS:
+                setattr(creative_ext, _f, merged[_f])
+            print(f"    · creative: parallel over {_creative_cap} docs "
+                  f"({_time.time() - _c_t0:.0f}s)")
+        else:
+            for _ci, text in enumerate(sample_list[:_creative_cap]):
+                creative_ext.extract_from_text(text)
+            _c_el = _time.time() - _c_t0
+            print(f"    · creative: {_creative_cap} docs ({_c_el:.0f}s)")
         creative = CreativeEngine()
         creative.patterns = creative_ext
         creative.save_patterns(os.path.join(out_dir, "creative_patterns.json"))
@@ -1554,6 +1776,15 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
         log.ok(f"Creative: {sum(cs.values())} patterns ({cs})")
     except Exception as e:
         log.warn(f"Reasoning/Creative extraction failed: {e}")
+
+    # Release parallel workers before the memory-heavy analytic phase
+    if _pool is not None:
+        try:
+            _pool.close()
+            _pool.join()
+        except Exception:
+            pass
+        _pool = None
 
     # --- Analytic weights from reservoir sample --------------------------
     processor = TextProcessor(vocab=vocab, dim=dim)
@@ -1608,18 +1839,37 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
     arrays["hasher"] = hasher.vector()
     arrays["patterns_raw"] = np.frombuffer(pickle.dumps(dict(extractor.patterns)), dtype=np.uint8)
 
-    # Save reservoir samples for retrieval-based generation
-    if reservoir_data:
-        reservoir_bytes = pickle.dumps(reservoir_data)
-        arrays["reservoir_sample"] = np.frombuffer(reservoir_bytes, dtype=np.uint8)
+    # Save reservoir samples for retrieval-based generation.
+    # EXPAND: merge with the previous reservoir (up to cap) so retraining
+    # ACCUMULATES memory instead of replacing it (fixes shrinking weights).
+    if reservoir_data or is_expand:
+        merged = list(reservoir_data)
+        if is_expand and "reservoir_sample" in arrays:
+            try:
+                prev_res = pickle.loads(arrays["reservoir_sample"].tobytes())
+                if prev_res:
+                    merged = (list(prev_res) + merged)[: _res_k]
+            except Exception:
+                pass
+        if merged:
+            reservoir_bytes = pickle.dumps(merged)
+            arrays["reservoir_sample"] = np.frombuffer(reservoir_bytes, dtype=np.uint8)
 
-    # Save QA bank (self-contained chat — no external pool at runtime)
+    # Save QA bank (self-contained chat — no external pool at runtime).
+    # EXPAND: keep previous QA pairs too, up to the qa_bank cap.
     if qa_sampler is not None:
         qa_data = list(qa_sampler.sample())
+        if is_expand and "qa_bank" in arrays:
+            try:
+                prev_qa = pickle.loads(arrays["qa_bank"].tobytes())
+                if prev_qa:
+                    qa_data = list(prev_qa) + list(qa_data)
+            except Exception:
+                pass
         if qa_data:
-            qa_bytes = pickle.dumps(qa_data)
+            qa_bytes = pickle.dumps(qa_data[:_qa_cap])
             arrays["qa_bank"] = np.frombuffer(qa_bytes, dtype=np.uint8)
-            log.ok(f"QA bank baked into model: {len(qa_data)} pairs")
+            log.ok(f"QA bank baked into model: {len(qa_data[:_qa_cap])} pairs")
 
     metadata = {
         "name": os.path.basename(out_dir),
@@ -1671,6 +1921,13 @@ def _encode_texts_to_weights(texts, out_dir, dim, layers, vocab_size, max_tokens
     from novacore.config import get_default as _gd
     from tqdm import tqdm
     import pickle
+
+    # Reproducible builds: global numpy/random must be seeded (training_upgrades
+    # uses np.random.choice / np.random.randn outside its own RandomState).
+    _seed = int(_gd('reservoir_seed') or _gd('seed') or 42)
+    np.random.seed(_seed)
+    random.seed(_seed)
+    del _seed
 
     # --- Detect if we can get a length -----------------------------------
     try:
@@ -1849,6 +2106,94 @@ def _encode_texts_to_weights(texts, out_dir, dim, layers, vocab_size, max_tokens
     log.done(f"model ready: {out_dir}  |  docs={metadata['num_documents']}")
 
 
+def cmd_cortex(args):
+    """Training-free attention memory net: interactive chat / benchmark."""
+
+    def _load_vocab(dir_):
+        from novacore.tokenizer.vocab import Vocabulary
+        vp = os.path.join(dir_, "vocab.json")
+        if os.path.exists(vp):
+            try:
+                return Vocabulary.load(vp)
+            except Exception:
+                pass
+        return Vocabulary()
+
+    if args.cortex_cmd == "bench":
+        from novacore.inference.memory_transformer import build_from_weights
+        from novacore.inference.chat import ChatSession
+        import time as _time
+
+        t0 = _time.time()
+        print(f"[cortex] building memory net from: {args.weights}", flush=True)
+        vocab = _load_vocab(args.weights)
+        mt, info = build_from_weights(
+            args.weights, vocab,
+            dim=args.dim, top_k=args.topk, gate_threshold=args.gate,
+            max_memories=args.max_memories,
+        )
+        print(f"[cortex] built in {_time.time()-t0:.1f}s: {info}", flush=True)
+
+        session = ChatSession(args.weights)
+        session.load()
+        questions = [q.strip() for q in args.questions.split(",") if q.strip()]
+        for q in questions:
+            print("\n" + "=" * 64)
+            print(f"Q: {q}")
+            t1 = _time.time()
+            try:
+                ans_a = mt.generate(q, max_tokens=args.max_tokens, temperature=0.7)
+            except Exception as e:
+                ans_a = f"[err: {e}]"
+            ta = _time.time() - t1
+            t2 = _time.time()
+            try:
+                ans_b = session.chat(q, max_tokens=args.max_tokens, verbose=False)
+            except Exception as e:
+                ans_b = f"[err: {e}]"
+            tb = _time.time() - t2
+            print(f"\n\033[94m[CORTEX attention net ({ta:.2f}s)]\033[0m")
+            print(str(ans_a).strip())
+            print(f"\n\033[92m[LEGACY chat path ({tb:.2f}s)]\033[0m")
+            print(str(ans_b).strip())
+        return
+
+    # cortex chat (default)
+    from novacore.inference.memory_transformer import build_from_weights
+
+    print(f"[cortex] building memory net from: {args.weights}", flush=True)
+    vocab = _load_vocab(args.weights)
+    mt, info = build_from_weights(
+        args.weights, vocab,
+        dim=args.dim, top_k=args.topk, gate_threshold=args.gate,
+        max_memories=args.max_memories,
+    )
+    print(f"[cortex] ready: {info}", flush=True)
+
+    def _run(prompt):
+        return mt.generate(prompt, max_tokens=args.max_tokens,
+                           temperature=args.temperature)
+
+    if args.prompt:
+        print(f"You: {args.prompt}")
+        print(f"\033[94mCortex> {_run(args.prompt)}\033[0m")
+        return
+
+    print("  (cortex chat - training-free attention memory net; /exit to quit)")
+    while True:
+        try:
+            nline = input("\nYou> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n[Cortex] Goodbye!")
+            break
+        if not nline:
+            continue
+        if nline in ("/exit", "/quit", "/q"):
+            print("[Cortex] Goodbye!")
+            break
+        print(f"\033[94mCortex> {_run(nline)}\033[0m")
+
+
 def main():
     # Force UTF-8 stdout so Unicode dataset content doesn't crash on Windows cp1252
     try:
@@ -1872,6 +2217,7 @@ def main():
         "list": cmd_list,
         "convert": cmd_convert,
         "chat": cmd_chat,
+        "cortex": cmd_cortex,
         "hf": cmd_hf,
     }
     handlers[args.command](args)

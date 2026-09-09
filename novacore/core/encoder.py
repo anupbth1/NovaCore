@@ -16,8 +16,10 @@ class RandomFourierEncoder:
         self.dim = dim if dim is not None else get_default('dim')
         self.layers = layers if layers is not None else get_default('layers')
         self.seed = seed if seed is not None else get_default('seed')
+        if self.seed is None:
+            self.seed = 42
         self.input_dim = input_dim if input_dim is not None else get_default('encoder_input_dim')
-        self._rng = np.random.RandomState(seed)
+        self._rng = np.random.RandomState(self.seed)
         self.W = None
         self.b = None
         self.beta = None

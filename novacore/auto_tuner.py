@@ -236,10 +236,26 @@ class AutoTuner:
         return base_rows
 
     # --- tuned knobs --------------------------------------------------
+    def apply_threading(self):
+        """Force BLAS / vectorized libs to use ~90% of cores for this process.
+        Must ALSO be set before numpy is imported (see cli/main.py top)."""
+        n = self.num_threads
+        for k in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS',
+                  'NUMEXPR_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS'):
+            os.environ.setdefault(k, str(n))
+        return n
+
     @property
     def num_threads(self):
         # leave 1-2 cores for OS / I/O
         return max(1, self.cpu_count - 2)
+
+    @property
+    def workers(self):
+        """Worker processes for the parallel encode/extract pipeline.
+        90% of cores, capped at 16 (I/O + RAM headroom); 1 when <=2 cores."""
+        capped = max(1, min(16, int(self.cpu_count * 0.9)))
+        return 1 if self.cpu_count < 4 else capped
 
     @property
     def shard_flush_cap(self):

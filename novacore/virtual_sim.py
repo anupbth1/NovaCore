@@ -28,14 +28,19 @@ class VirtualVerifier:
       - Length appropriateness (not too short, not too long)
     """
 
-    def __init__(self, vocab, extractor, reservoir_sample, min_score=0.45):
+    def __init__(self, vocab, extractor, reservoir_sample, min_score=0.45, profile_cap=5000):
         self.vocab = vocab              # Vocabulary instance
         self.extractor = extractor      # PatternExtractor
         self.reservoir = reservoir_sample  # list of representative texts
         self.min_score = min_score
-        # Pre-compute reservoir token frequency profile for comparison
+        self._log = None  # optional live-logger callback injected by ChatSession
+        # Pre-compute reservoir token frequency profile for comparison.
+        # Uses only the first *profile_cap* docs — the profile is a statistical
+        # backdrop for KL-divergence, and tokenizing 200k+ docs on every reply
+        # was the single biggest chat latency killer.
+        _cap_res = self.reservoir[:profile_cap] if self.reservoir else []
         self.reservoir_token_freq = Counter()
-        for t in self.reservoir:
+        for t in _cap_res:
             if isinstance(t, str):
                 for tok in self.vocab._tokenize(t):
                     self.reservoir_token_freq[tok] += 1
@@ -248,6 +253,7 @@ class VirtualSelfCorrector:
         self.threshold = threshold
         self.max_attempts = max_attempts
         self.vocab = vocab
+        self._log = None  # optional live-logger callback injected by ChatSession
         
         # Correction strategies in order of effectiveness
         self.correction_strategies = [
@@ -267,12 +273,21 @@ class VirtualSelfCorrector:
         
         # If already above threshold, nothing to correct
         if best_score >= self.threshold:
+            if self._log is not None:
+                self._log(f"     [correct] already above threshold "
+                          f"({best_score:.3f}) — no correction needed")
             return {"text": best_text, "score": best_score, "corrected": False, "attempts": 0}
+        
+        if self._log is not None:
+            self._log(f"     [correct] score {best_score:.3f} < threshold "
+                      f"{self.threshold} — trying {self.max_attempts} rounds of "
+                      f"{len(self.correction_strategies)} strategies")
         
         # Try corrections using multiple strategies
         while attempts < self.max_attempts and best_score < self.threshold:
             attempts += 1
             corrected = text
+            _round_improved = False
             
             # Apply correction strategies in order
             for strategy in self.correction_strategies:
@@ -280,10 +295,19 @@ class VirtualSelfCorrector:
                 if candidate != corrected:
                     score = self.verifier.score_text(candidate, query_context)
                     if score > best_score:
+                        if self._log is not None:
+                            self._log(f"     [correct] round {attempts}: "
+                                      f"'{strategy.__name__}' improved "
+                                      f"{best_score:.3f} -> {score:.3f}")
+                            self._log(f"            new text: {candidate[:110]!r}")
                         best_text = candidate
                         best_score = score
                         corrected = candidate  # Continue improving from this version
+                        _round_improved = True
             
+            if self._log is not None:
+                self._log(f"     [correct] round {attempts} final score={best_score:.3f} "
+                          f"(improved={_round_improved})")
             # If no improvement, try a different approach
             if best_score <= self.verifier.score_text(text, query_context):
                 break

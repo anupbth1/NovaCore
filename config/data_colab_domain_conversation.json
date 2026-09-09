@@ -33,8 +33,9 @@
         "conversation": { "reconstruct_threads": true, "min_thread_length": 1 }
       }
     },
-    "li2017dailydialog/daily_dialog": {
+    "OpenRL/daily_dialog": {
       "split": "train",
+      "column": "dialog",
       "max_rows": null,
       "mode": "stream",
       "random": false,

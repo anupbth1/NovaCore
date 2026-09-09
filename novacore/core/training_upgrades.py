@@ -17,6 +17,21 @@ from collections import Counter, defaultdict
 import numpy as np
 
 
+def _svd_cuda_or_numpy(mat, full_matrices=False):
+    """SVD: torch-CUDA when present+available (GPU-friendly), else numpy.
+    torch is optional; zero new hard dependencies. NOVACORE_CPU_ONLY forces CPU."""
+    if os.environ.get('NOVACORE_CPU_ONLY') != '1':
+        try:
+            import torch
+            if torch.cuda.is_available():
+                t = torch.tensor(mat, dtype=torch.float32, device='cuda')
+                U, S, Vt = torch.linalg.svd(t, full_matrices=False)
+                return (U.cpu().numpy(), S.cpu().numpy(), Vt.cpu().numpy())
+        except Exception:
+            pass
+    return np.linalg.svd(mat, full_matrices=False)
+
+
 class TrainingUpgrader:
     def __init__(self, vocab, config=None):
         self.vocab = vocab
@@ -95,10 +110,10 @@ class TrainingUpgrader:
         row_sums[row_sums == 0] = 1
         cooc = cooc / row_sums
 
-        # SVD
+        # SVD (torch/CUDA when available and usable, else numpy/BLAS)
         print("[Upgrade] Computing SVD embeddings...")
         try:
-            U, S, Vt = np.linalg.svd(cooc, full_matrices=False)
+            U, S, Vt = _svd_cuda_or_numpy(cooc)
             self.embeddings = U[:, :self.svd_dim] * S[:self.svd_dim]
             # Normalize for cosine similarity
             norms = np.linalg.norm(self.embeddings, axis=1, keepdims=True)

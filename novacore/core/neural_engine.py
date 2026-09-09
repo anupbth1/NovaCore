@@ -19,11 +19,22 @@ Architecture:
 """
 
 import re
+import string
 import math
 import random
 import json
 from collections import Counter
 from typing import List, Dict, Any, Optional
+
+
+# ---------------------------------------------------------------------------
+# Relevance-gate vocabulary: greeting words are exempt from the strict
+# word-overlap requirement because their natural answers are synonyms
+# ("hello" -> "Hi there!") that share no words with the query.
+# ---------------------------------------------------------------------------
+_GREETING_WORDS = frozenset([
+    'hi', 'hello', 'hey', 'yo', 'morning', 'afternoon', 'evening',
+])
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +392,7 @@ class VirtualSimulationInternal:
         self.weight_length = scoring.get('length', 0.4)
         self.weight_relevance = scoring.get('relevance', 0.4)
         self.weight_coherence = scoring.get('coherence', 0.2)
+        self._log = None  # optional live-logger callback injected by ChatSession
         self.stop_words = {
             'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been',
             'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
@@ -388,8 +400,45 @@ class VirtualSimulationInternal:
             'need', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by',
             'from', 'this', 'that', 'it', 'or', 'and', 'but', 'not',
             'if', 'then', 'so', 'no', 'yes',
+            'what', 'which', 'who', 'whom', 'whose', 'when', 'where',
+            'why', 'how', 'there', 'please', 'some', 'any',
+            'kya', 'ka', 'ki', 'ke', 'kaise', 'kahan', 'kyun', 'kis',
+            'hai', 'ho', 'hain', 'kar', 'karta', 'karte', 'hota',
+            'hoti', 'hote',
         }
         self._score_cache = {}
+
+    def _real_words(self, text):
+        """Lowercased content words from *text*: split on whitespace, strip
+        surrounding punctuation (so 'you?' and 'you' are the same word) and
+        drop tokens that are punctuation-only (so '?' can never count as a
+        shared content word)."""
+        out = set()
+        for w in text.lower().split():
+            w2 = w.strip(string.punctuation)
+            if w2 and any(c not in string.punctuation for c in w2):
+                out.add(w2)
+        return out
+
+    def _is_relevant(self, query, response):
+        """True when the answer shares enough real content words with the
+        query.  Greeting queries are exempt (their answers are synonyms, e.g.
+        'hello' -> 'Hi there!').  A single shared word is NOT enough for a
+        substantive multi-word query: 'who is pm of india' vs a timezone answer
+        both contain 'pm' (prime minister vs post meridiem), so we require at
+        least half the query's content words to appear in the answer."""
+        q_content = self._real_words(query) - self.stop_words
+        if not q_content:
+            q_content = self._real_words(query)
+        if not q_content or q_content <= _GREETING_WORDS:
+            return True
+        r_content = self._real_words(response) - self.stop_words
+        if not r_content:
+            r_content = self._real_words(response)
+        shared = len(q_content & r_content)
+        if len(q_content) >= 2:
+            return shared >= max(2, math.ceil(len(q_content) * 0.5))
+        return shared > 0
 
     def simulate(self, query: str, response: str) -> Dict[str, Any]:
         result = {
@@ -399,11 +448,45 @@ class VirtualSimulationInternal:
             'corrected': False,
             'final_response': response,
             'attempts': 0,
+            'relevant': True,
         }
+        if self._log is not None:
+            self._log(f"     [sim] input ({len(response)} chars): {response[:110]!r}")
         # Always clean first
         cleaned = clean_artifacts(response)
+        if self._log is not None:
+            if cleaned != response:
+                self._log(f"     [sim] artifacts cleaned — text CHANGED", )
+                self._log(f"             before: {response[:110]!r}", )
+                self._log(f"             after : {cleaned[:110]!r}", )
+            else:
+                self._log(f"     [sim] no artifacts found — text unchanged")
+            words = cleaned.split()
+            qe = self._real_words(query) - self.stop_words
+            if not qe:
+                qe = self._real_words(query)
+            rw = self._real_words(cleaned) - self.stop_words
+            if not rw:
+                rw = self._real_words(cleaned)
+            overlap = len(qe & rw)
+            self._log(f"     [sim] checks: words={len(words)} "
+                      f"relevance_overlap={overlap}/{len(qe)} "
+                      f"first_cap={bool(cleaned and cleaned[0].isupper())} "
+                      f"ends_punct={bool(cleaned and cleaned[-1] in '.!?')}")
+        # Relevance gate: an answer that shares NO content words with a
+        # substantive query is irrelevant however well-formed it looks.  Cap its
+        # score below the pass threshold so the length/coherence/formatting
+        # bonuses alone can never return unrelated trivia.
+        relevant = self._is_relevant(query, response) if cleaned else False
+        result['relevant'] = relevant
         score = self._score_response(query, cleaned)
+        if not relevant:
+            score = min(score, self.quality_threshold - 0.01)
         result['score'] = score
+        if self._log is not None:
+            self._log(f"     [sim] score={score:.3f} threshold="
+                      f"{self.quality_threshold} -> "
+                      f"{'PASS' if score >= self.quality_threshold else 'FAIL'}")
         if score >= self.quality_threshold:
             result['passed'] = True
             result['final_response'] = cleaned
@@ -427,8 +510,12 @@ class VirtualSimulationInternal:
         elif word_count >= 5:
             score += self.weight_length * 0.5
         # Relevance score
-        query_words = set(query.lower().split()) - self.stop_words
-        response_words = set(response.lower().split()) - self.stop_words
+        query_words = self._real_words(query) - self.stop_words
+        if not query_words:
+            query_words = self._real_words(query) or {''}
+        response_words = self._real_words(response) - self.stop_words
+        if not response_words:
+            response_words = self._real_words(response)
         if query_words:
             overlap = len(query_words & response_words)
             score += self.weight_relevance * min(1.0, overlap / len(query_words))
@@ -464,6 +551,7 @@ class VerificationEngine:
         self.min_score = cfg.get('min_score', 0.3)
         self.reservoir_search_limit = cfg.get('reservoir_search_limit', 200)
         self.verification_history = []
+        self._log = None  # optional live-logger callback injected by ChatSession
         self.stop_words = {
             'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been',
             'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
@@ -482,27 +570,49 @@ class VerificationEngine:
             'attempts': 0,
             'scores': [],
         }
+        if self._log is not None:
+            self._log(f"     [verify] start: {result['final_response'][:100]!r}")
         score = self._calculate_score(query, result['final_response'])
         result['scores'].append(score)
         result['attempts'] = 1
+        if self._log is not None:
+            self._log(f"     [verify] attempt 1 score={score:.3f} "
+                      f"(min={self.min_score})")
         if score >= self.min_score:
             result['verified'] = True
+            if self._log is not None:
+                self._log(f"     [verify] ✓ VERIFIED on first attempt")
             return result
         # Retry: search reservoir for better match
         if self.reservoir:
+            if self._log is not None:
+                self._log(f"     [verify] below threshold → searching reservoir "
+                          f"({min(len(self.reservoir), self.reservoir_search_limit)} docs) "
+                          f"for a better response...")
             improved = self._get_better_response(query)
             if improved:
+                if self._log is not None:
+                    self._log(f"     [verify] reservoir candidate: {improved[:100]!r}")
                 score2 = self._calculate_score(query, improved)
                 result['scores'].append(score2)
                 result['attempts'] = 2
+                if self._log is not None:
+                    self._log(f"     [verify] attempt 2 score={score2:.3f}")
                 if score2 >= self.min_score:
                     result['verified'] = True
                     result['final_response'] = improved
+                    if self._log is not None:
+                        self._log(f"     [verify] ✓ VERIFIED after reservoir retry")
                     return result
                 # If improved is still better, use it anyway
                 if score2 > score:
                     result['final_response'] = improved
+            else:
+                if self._log is not None:
+                    self._log(f"     [verify] no better reservoir match found")
         self.verification_history.append(result)
+        if self._log is not None:
+            self._log(f"     [verify] ✗ NOT verified")
         return result
 
     def _get_better_response(self, query: str) -> str:
@@ -596,17 +706,34 @@ class NovaNeuralEngine:
             patterns, vocab, self.reservoir, config=ve_cfg,
         )
         self.processing_history = []
+        self._log = None  # optional live-logger callback injected by ChatSession
+        self.verification_engine._log = None
+        self.virtual_simulation._log = None
+
+    def set_logger(self, log_cb):
+        """Inject a live logger so internal steps stream to the chat console.
+        A ``None`` callback disables logging."""
+        self._log = log_cb
+        self.verification_engine._log = log_cb
+        self.virtual_simulation._log = log_cb
 
     def process(self, query: str, max_tokens: int = 100) -> str:
         """Complete internal processing pipeline. NO hardcoded logic."""
         # Step 1: Check if this is a math query → Python terminal
         math_result = self.python_terminal.parse_and_compute(query)
         if math_result is not None:
+            if self._log is not None:
+                self._log(f"     [neural] math detected -> {math_result}")
             return math_result
+        if self._log is not None:
+            self._log(f"     [neural] not a math query")
 
         # Step 2: Embed + neural forward pass
         embedding = self._embed_query(query)
         neural_output = self.neural_network.forward(embedding)
+        if self._log is not None:
+            self._log(f"     [neural] embedded query -> 128-dim hash vector, "
+                      f"forward pass complete (active={sum(1 for x in neural_output if x > 0.5)})")
 
         # Step 3: Generate response from dataset knowledge using neural routing
         response = self._generate_from_neural(query, neural_output)
@@ -646,14 +773,22 @@ class NovaNeuralEngine:
             vocab = getattr(self, '_vocab', None)
             if vocab is not None:
                 from ..inference.chat import SEMANTIC_SEARCH_TOP_K, NEURAL_BEST_MATCH_MIN_SCORE
+                if self._log is not None:
+                    self._log(f"     [neural] reservoir match via semantic index...")
                 results = si.search(query, vocab, top_k=SEMANTIC_SEARCH_TOP_K)
                 if results and results[0][0] > NEURAL_BEST_MATCH_MIN_SCORE:
+                    if self._log is not None:
+                        self._log(f"     [neural] semantic hit score={results[0][0]:.3f}")
                     return clean_artifacts(results[0][1])
         # Fallback: word overlap
         query_words = set(query.lower().split())
         best_text = ""
         best_score = 0
         from ..inference.chat import NEURAL_RESERVOIR_SCAN_LIMIT
+        if self._log is not None:
+            self._log(f"     [neural] scanning first "
+                      f"{min(len(self.reservoir), NEURAL_RESERVOIR_SCAN_LIMIT)} "
+                      f"reservoir docs by word overlap...")
         for text in self.reservoir[:NEURAL_RESERVOIR_SCAN_LIMIT]:
             if not text:
                 continue
@@ -662,6 +797,8 @@ class NovaNeuralEngine:
             if overlap > best_score:
                 best_score = overlap
                 best_text = text
+        if self._log is not None:
+            self._log(f"     [neural] reservoir best word-overlap={best_score}")
         if best_text:
             return clean_artifacts(best_text)
         return ""
@@ -685,14 +822,28 @@ class NovaNeuralEngine:
             vocab = getattr(self, '_vocab', None)
             if vocab is not None:
                 from ..inference.chat import SEMANTIC_SEARCH_TOP_K, NEURAL_SEMANTIC_MIN_SCORE
+                if self._log is not None:
+                    self._log(f"     [neural] routing: semantic index search...")
                 results = si.search(query, vocab, top_k=SEMANTIC_SEARCH_TOP_K)
                 if results and results[0][0] > NEURAL_SEMANTIC_MIN_SCORE:
+                    if self._log is not None:
+                        self._log(f"     [neural] semantic routing hit "
+                                  f"score={results[0][0]:.3f} "
+                                  f"(min={NEURAL_SEMANTIC_MIN_SCORE})")
                     return clean_artifacts(results[0][1])
+                if self._log is not None:
+                    _top = f"{results[0][0]:.3f}" if results else "none"
+                    self._log(f"     [neural] semantic hit below min "
+                              f"({_top}) -> reservoir scan")
 
         # Fallback: word overlap on reservoir
         query_words = set(query.lower().split())
         from ..inference.chat import NEURAL_RESERVOIR_SCAN_LIMIT
         if self.reservoir:
+            if self._log is not None:
+                self._log(f"     [neural] scanning reservoir "
+                          f"({min(len(self.reservoir), NEURAL_RESERVOIR_SCAN_LIMIT)} docs, "
+                          f"overlap>0)...")
             scored_reservoir = []
             for text in self.reservoir[:NEURAL_RESERVOIR_SCAN_LIMIT]:
                 if not text:
@@ -704,7 +855,12 @@ class NovaNeuralEngine:
             if scored_reservoir:
                 scored_reservoir.sort(key=lambda x: x[1], reverse=True)
                 best_text = scored_reservoir[0][0]
+                if self._log is not None:
+                    self._log(f"     [neural] reservoir best overlap="
+                              f"{scored_reservoir[0][1]}")
                 return clean_artifacts(best_text)
+            if self._log is not None:
+                self._log(f"     [neural] no reservoir overlap -> pattern fallback")
 
         # Fallback: try patterns
         scored_patterns = []
@@ -720,6 +876,9 @@ class NovaNeuralEngine:
             pattern_top_k = get_default('pattern_top_k')
             for gram, score in scored_patterns[:pattern_top_k]:
                 response_words.extend(gram)
+            if self._log is not None:
+                self._log(f"     [neural] pattern fallback: {len(scored_patterns)} "
+                          f"matching 2-grams found")
             if response_words:
                 return clean_artifacts(' '.join(response_words))
         return ""

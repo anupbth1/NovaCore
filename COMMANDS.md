@@ -1,5 +1,5 @@
 # NovaCore - COMMANDS.md
-> Last Updated: 2026-09-01 (data/ + weights/ centralization)
+> Last Updated: 2026-09-09 (train-pools: `--workers` / `--cpu-only`, HW auto-tune, deterministic builds, `config_colab_stream_big.json`)
 
 > **Paths (config/config.json se):**
 > - Local datasets → `data/`
@@ -105,6 +105,8 @@ Main options:
 - `--random` / `--no-random` : rows random pick (dedupe-aware) / sequential — config `random` bhi chalega
 - `--add-datasets` / `--no-add-datasets` : har run me N naye unique rows pool me add / pure reuse — config `add_datasets` bhi chalega
 - `--column` : text column
+- `--workers N` : parallel extract worker processes. Auto = ~90% cores (cap 16); on 2-core machines auto=1 (parallel off) → Colab free pe **explicit `--workers 2`** do
+- `--cpu-only` : GPU acceleration OFF — SVD numpy/BLAS hi rahega (reproducible CPU-only builds)
 
 > **Cache auto-reuse (download skip):**
 > `mode: download` hamesha data fetch + cache karta hai `paths.hf_cache` me
@@ -153,6 +155,15 @@ Main options:
 > `stream` mode me rows lazily stream hote hain (RAM save); stream ke saath random/add N/A.
 
 > **IMPORTANT:** `--config config/config.json` diya to defaults (dim=512, layers=4, vocab=30000, max_tokens=80, temp=0.8) config se aayenge. Inhe CLI flags se override kar sakte ho.
+
+> **HW auto-tune (train / train-pools) — 2026-09-09:** har run ki shuruaat me
+> `[NovaCore] HW: CPU=.. RAM=.. GPU=.. threads=.. workers=..` print hota hai.
+> BLAS threads = cpu−2; workers = 90% cores (cap 16; 1 jab <4 cores). GPU (torch CUDA) sirf
+> SVD stage me `_svd_cuda_or_numpy()` se use hota hai — torch **optional** (numpy/BLAS fallback),
+> `--cpu-only` se band. Encode loop + reasoning/creative extraction ab **multiprocessing parallel**
+> (Pool, 20k rows/chunk, serial fallback; vocab/pattern/facts byte-identical result banata hai).
+> Builds ab **deterministic** hain (encoder seed fix) — same config + same data = byte-identical
+> `weights.ncw`. Bada/coverage config ready: `config/config_colab_stream_big.json` (§ below).
 
 ## 🤗 Hugging Face Commands
 
@@ -557,49 +568,53 @@ python cli/main.py train-pools --load NovaCore --dataset config/data_hindi.json 
 # Final model has ALL knowledge
 python cli/main.py chat --weights weights/NovaCore
 
+## Colab free GPU — streaming build (corrected 2026-09-09)
 
+> **Pehle GitHub pe push karo** — `!git clone` remote code use karta hai; `--workers`,
+> solver, parallel build, encoder determinism fix sab sirf local changes hain.
+> Config: `config/config_colab_stream.json` (normal) ya `config/config_colab_stream_big.json`
+> (bada coverage: vocab 80k, qa_bank 200k, pattern caps 400k/1M, reasoning/creative caps 150k).
 
-
-
-# Cell 1: Setup
-!git clone https://github.com/anupbth1/NovaCore.git
+```python
+# Cell 1: Setup — sirf FRESH session me. Wahi session rerun karne pe cell 1 chhodo (skip/pull).
+%cd /content
+!git clone -q https://github.com/anupbth1/NovaCore.git || (cd NovaCore && git pull -q)
 %cd NovaCore
-!pip install numpy tqdm datasets huggingface_hub
 from huggingface_hub import login
-login(token="hf_xxxxx")
+login(token="hf_XXXXXX")   # apna token; test ke baad ROTATE
 
-# Cell 2: BASE (General) — ~120K docs, ~15 min
-!python cli/main.py train-pools --dataset config/data_colab_general.json \
-  --config config/config_colab_stream.json --output NovaCoreV10
+# Cell 2: BASE — stream (~25-35 min, 2 vCPU + T4)
+!python cli/main.py train-pools --dataset config/data_colab_general.json --config config/config_colab_stream.json --output NovaCoreV15 --workers 2
 
-# Cell 3: DOMAIN 1 - Conversation — +35K docs, ~5 min
-!python cli/main.py train-pools --load NovaCoreV10 \
-  --dataset config/data_colab_domain_conversation.json --add-datasets \
-  --config config/config_colab_stream.json
+# Cell 3: Conversation
+!python cli/main.py train-pools --load NovaCoreV15 --dataset config/data_colab_domain_conversation.json --config config/config_colab_stream.json --workers 2
 
-# Cell 4: DOMAIN 2 - Coding — +20K docs, ~3 min
-!python cli/main.py train-pools --load NovaCoreV10 \
-  --dataset config/data_colab_domain_coding.json --add-datasets \
-  --config config/config_colab_stream.json
+# Cell 4: Coding   (load = NovaCoreV15, V10 NAHI)
+!python cli/main.py train-pools --load NovaCoreV15 --dataset config/data_colab_domain_coding.json --config config/config_colab_stream.json --workers 2
 
-# Cell 5: DOMAIN 3 - Hindi — +10K docs, ~2 min
-!python cli/main.py train-pools --load NovaCoreV10 \
-  --dataset config/data_colab_domain_hindi.json --add-datasets \
-  --config config/config_colab_stream.json
+# Cell 5: Hindi
+!python cli/main.py train-pools --load NovaCoreV15 --dataset config/data_colab_domain_hindi.json --config config/config_colab_stream.json --workers 2
 
-# Cell 6: DOMAIN 4 - Reasoning — +30K docs, ~5 min
-!python cli/main.py train-pools --load NovaCoreV10 \
-  --dataset config/data_colab_domain_reasoning.json --add-datasets \
-  --config config/config_colab_stream.json
+# Cell 6: Reasoning
+!python cli/main.py train-pools --load NovaCoreV15 --dataset config/data_colab_domain_reasoning.json --config config/config_colab_stream.json --workers 2
 
-# Cell 7: DOMAIN 5 - Creative — +30K docs, ~5 min
-!python cli/main.py train-pools --load NovaCoreV10 \
-  --dataset config/data_colab_domain_creative.json --add-datasets \
-  --config config/config_colab_stream.json
+# Cell 7: Creative
+!python cli/main.py train-pools --load NovaCoreV15 --dataset config/data_colab_domain_creative.json --config config/config_colab_stream.json --workers 2
 
-# Cell 8: DOMAIN 6 - Science — +20K docs, ~3 min
-!python cli/main.py train-pools --load NovaCoreV10 \
-  --dataset config/data_colab_domain_science.json --add-datasets \
-  --config config/config_colab_stream.json
+# Cell 8: Science
+!python cli/main.py train-pools --load NovaCoreV15 --dataset config/data_colab_domain_science.json --config config/config_colab_stream.json --workers 2
+```
 
-# Total: ~245K docs, ~38 minutes on CPU
+> **Rules:**
+> - Har domain cell **ek baar hi** chalana — dobara chalane se duplicate facts/patterns inflate hote hain.
+> - Config saare cells me **same** rehna chahiye (expand me dim/layers/vocab match hona zaroori hai) — bich me mat badlo.
+> - `--cpu-only` **mat** lagao — GPU (torch CUDA) SVD stage accel karta hai.
+> - Base ~5 min nahi hoga: stream loops pure-Python hain; `--workers 2` (multiprocessing) + GPU SVD
+>   roughly 1.5–1.8x dete hain. Start pe `[NovaCore] HW: CPU=2 GPU=T4...` line se verify karo.
+> - Re-run: fail hone par wahi cell dubara chalao (page new remaining cells pichle state se age).
+
+### Big/coverage config — `config/config_colab_stream_big.json` (Colab free RAM-safe)
+Higher `vocab_size` (80k), `qa_bank_cap` 200k, `pattern_vocab_cap` 400k, `pattern_sample_cap` 1M,
+`reasoning/creative_extract_cap` 150k. RAKHA HAI: `dim` 1024, `reservoir_sample_size` 100k
+(reservoir 250k → analytic X+Y matrices ~6GB → OOM on 12GB Colab). Bigger = zyada COVERAGE,
+"smarter" nahi — exact math/transitive answers solver fast-path se aate hain (config-independent).

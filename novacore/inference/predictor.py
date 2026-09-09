@@ -106,6 +106,7 @@ class PatternPredictor(Predictor):
         self.reservoir_samples = reservoir_samples or []
         self.upgrader = None
         self.semantic_index = semantic_index
+        self._log = None  # optional live-logger callback injected by ChatSession
         # Model metadata values (set by ChatSession for zero-config chat)
         self.model_max_tokens = 4096
         self.model_temperature = 0.7
@@ -147,16 +148,32 @@ class PatternPredictor(Predictor):
             from ..virtual_sim import SimulationEngine
             from .chat import SIM_THRESHOLD
             extractor = getattr(self, 'patterns', None) or None
+            if self._log is not None:
+                self._log(f"     [self-correct] building sim engine "
+                          f"(precomputing token profile over up to 5000 "
+                          f"reservoir docs)...")
             engine = SimulationEngine(
                 vocab=self.vocab,
                 extractor=extractor,
                 reservoir_sample=self.reservoir_samples,
                 config={"sim_threshold": SIM_THRESHOLD},
             )
+            if self._log is not None:
+                engine.verifier._log = self._log
+                engine.corrector._log = self._log
+                self._log(f"     [self-correct] running virtual simulation on "
+                          f"predictor output...")
             
             # Apply correction with query context
             sim_result = engine.verify_and_correct(result, query_context=prompt)
+            if self._log is not None:
+                self._log(f"     [self-correct] score={sim_result.get('score', 0):.3f} "
+                          f"corrected={sim_result.get('corrected', False)} "
+                          f"attempts={sim_result.get('attempts', 0)}")
             if sim_result["corrected"]:
+                if self._log is not None:
+                    self._log(f"     [self-correct] BEFORE: {result[:130]!r}")
+                    self._log(f"     [self-correct] AFTER : {sim_result['text'][:130]!r}")
                 result = sim_result["text"]
                 
         except Exception:
@@ -181,34 +198,64 @@ class PatternPredictor(Predictor):
     def _generate_pattern_based(self, prompt, max_tokens, temperature):
         """Pattern-based generation with semantic search upgrade."""
         import random
+        import sys
 
         # Priority 1: Try built-in semantic index
         if self.semantic_index is not None and self.semantic_index._built:
             from .chat import SEMANTIC_SEARCH_TOP_K, SEMANTIC_SEARCH_THRESHOLD
+            if self._log is not None:
+                self._log(f"     [pred] trying built-in semantic index...")
             results = self.semantic_index.search(prompt, self.vocab, top_k=SEMANTIC_SEARCH_TOP_K)
             if results and results[0][0] > SEMANTIC_SEARCH_THRESHOLD:
                 best_text = results[0][1]
                 if best_text and len(best_text) > 10:
+                    if self._log is not None:
+                        self._log(f"     [pred] ✓ semantic index returned "
+                                  f"(score={results[0][0]:.3f})")
                     return best_text
+            if self._log is not None:
+                self._log(f"     [pred] semantic index: "
+                          f"{'below threshold' if results else 'no hits'} "
+                          f"-> try SVD")
 
         # Priority 2: SVD-based semantic search (if upgrader available)
         if self.upgrader and self.upgrader.semantic_search_enabled and self.reservoir_samples:
             from .chat import SEMANTIC_SEARCH_TOP_K, SVD_SEMANTIC_MIN_SCORE
+            if self._log is not None:
+                self._log(f"     [pred] trying SVD semantic search "
+                          f"(dim={self.upgrader.svd_dim})...")
             sem_results = self.upgrader.semantic_search(
                 prompt, self.reservoir_samples, top_k=SEMANTIC_SEARCH_TOP_K
             )
             if sem_results and sem_results[0][0] > SVD_SEMANTIC_MIN_SCORE:
                 best_text = sem_results[0][2]
                 if len(best_text) > 10:
+                    if self._log is not None:
+                        self._log(f"     [pred] ✓ SVD search returned "
+                                  f"(score={sem_results[0][0]:.3f})")
                     return best_text[:max_tokens * 4]
+            if self._log is not None:
+                self._log(f"     [pred] SVD search: "
+                          f"{'below threshold' if sem_results else 'no hits'} "
+                          f"-> n-gram fallback")
 
         # Priority 3: n-gram pattern generation (last resort)
         result = ""
         current_tokens = self.vocab._tokenize(prompt)
 
-        for _ in range(max_tokens):
+        _npat = len(getattr(self.patterns, 'patterns', {}) or {})
+        if self._log is not None:
+            self._log(f"     [pred] n-gram generation over {_npat} patterns, "
+                      f"max_tokens={max_tokens}, temp={temperature}")
+
+        import time as _clock
+        _gen_t0 = _clock.time()
+        for step in range(max_tokens):
             candidates = self._next_candidates(current_tokens)
             if not candidates:
+                if self._log is not None:
+                    self._log(f"     [pred] no more n-gram candidates after "
+                              f"{step} tokens")
                 break
             if temperature <= 0:
                 word = candidates[0][0]
@@ -219,8 +266,17 @@ class PatternPredictor(Predictor):
                 probs = probs / probs.sum()
                 word = candidates[random.choices(range(len(candidates)), probs)[0]][0]
             result += (" " if result else "") + word
+            if self._log is not None:
+                _snippet = result[-70:].replace('\n', ' ')
+                sys.stdout.write(f"\r     ✍️ token {step + 1}: '{word}'  ->  ...{_snippet}")
+                sys.stdout.flush()
             current_tokens.append(word)
             current_tokens = current_tokens[-10:]  # history window
+
+        if self._log is not None:
+            sys.stdout.write(f"\r     ✍️ n-gram generation done: {len(result.split())} "
+                             f"words in {_clock.time() - _gen_t0:.2f}s{' ' * 30}\n")
+            sys.stdout.flush()
 
         return result
 

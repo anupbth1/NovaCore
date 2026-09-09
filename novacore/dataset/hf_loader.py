@@ -648,10 +648,24 @@ class HFLoader:
         # Streaming iterables fetch only the requested split's shards (lazily),
         # so a `num_rows` cap below pulls just the shards covering those rows.
         print(f"[NovaCore] {label}: loading HF dataset (split={split}, streaming={use_stream}) ...", flush=True)
-        ds = datasets_obj.load_dataset(
-            dataset_name, split=split,
-            streaming=use_stream, **kwargs
-        )
+        try:
+            ds = datasets_obj.load_dataset(
+                dataset_name, split=split,
+                streaming=use_stream, **kwargs
+            )
+        except RuntimeError as e:
+            if "no longer supported" not in str(e):
+                raise
+            # datasets 5.x removed script-based datasets (e.g. daily_dialog).
+            # Point the user at a data-only mirror instead of failing silently.
+            print(
+                f"[NovaCore] {label}: script-based dataset '{dataset_name}' is not supported by the "
+                f"installed datasets lib ({getattr(datasets_obj, '__version__', '?')}). "
+                f"Use a data-only mirror (parquet/arrow) of the same data in "
+                f"`config/...json` -> datasets.<name>.",
+                flush=True,
+            )
+            raise
         print(f"[NovaCore] {label}: HF dataset loaded, detecting schema ...", flush=True)
         col = text_column
         report = None
