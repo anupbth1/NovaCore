@@ -1865,7 +1865,11 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
             try:
                 prev_res = pickle.loads(arrays["reservoir_sample"].tobytes())
                 if prev_res:
-                    merged = (list(prev_res) + merged)[: _res_k]
+                    # Match the sampler capacity (see ReservoirSampler init: _res_k*_res_mult,
+                    # capped at _res_k*4 + _res_k) so expanding ACCUMULATES reservoir memory
+                    # instead of truncating it back down to _res_k (which shrank the model).
+                    _merge_cap = min(_res_k * _res_mult, (_res_k * 4) + _res_k)
+                    merged = (list(prev_res) + merged)[: _merge_cap]
             except Exception:
                 pass
         if merged:
