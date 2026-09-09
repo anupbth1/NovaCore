@@ -1708,22 +1708,30 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
         import time as _time
 
         def _parallel_lists(worker, docs, fields):
-            """Map `worker` over sliced docs, merge list-fields, keep order."""
+            """Map `worker` over sliced docs, merge list-fields, keep order.
+            Prints per-chunk completion so long regex phases show progress."""
             parts = []
-            _slice = 20000
+            _slice = 10000
+            _t0 = _time.time()
+            _total = len(docs)
             if _pool is not None:
                 _futs = []
-                for _s in range(0, len(docs), _slice):
+                for _s in range(0, _total, _slice):
                     _futs.append(_pool.apply_async(worker, (docs[_s:_s + _slice],)))
-                for _f in _futs:
+                for _fi, _f in enumerate(_futs, 1):
                     try:
                         parts.append(_f.get())
                     except Exception as _exc:
                         print(f"[NovaCore] parallel extract error: {_exc}",
                               file=sys.stderr, flush=True)
+                    print(f"    · {os.path.basename(getattr(worker, '__name__', 'extract'))} "
+                          f"chunk {_fi}/{len(_futs)} ({_time.time() - _t0:.0f}s)",
+                          flush=True)
             else:
-                for _s in range(0, len(docs), _slice):
+                for _si, _s in enumerate(range(0, _total, _slice), 1):
                     parts.append(worker(docs[_s:_s + _slice]))
+                    print(f"    · chunk {_si}/{( _total + _slice - 1) // _slice} "
+                          f"({_time.time() - _t0:.0f}s)", flush=True)
             merged = {f: [] for f in fields}
             for p in parts:
                 for f in fields:
@@ -1745,6 +1753,9 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
         else:
             for _ri, text in enumerate(sample_list[:_reasoning_cap]):
                 reasoning_ext.extract_from_text(text)
+                if (_ri + 1) % 25000 == 0:
+                    print(f"    · reasoning {_ri + 1}/{_reasoning_cap} docs "
+                          f"({_time.time() - _r_t0:.0f}s)", flush=True)
             _r_el = _time.time() - _r_t0
             print(f"    · reasoning: {_reasoning_cap} docs ({_r_el:.0f}s)")
         reasoner = DeepReasoner()
@@ -1768,6 +1779,9 @@ def _train_from_stream(text_iter, out_dir, dim, layers, vocab_size, max_tokens,
         else:
             for _ci, text in enumerate(sample_list[:_creative_cap]):
                 creative_ext.extract_from_text(text)
+                if (_ci + 1) % 25000 == 0:
+                    print(f"    · creative {_ci + 1}/{_creative_cap} docs "
+                          f"({_time.time() - _c_t0:.0f}s)", flush=True)
             _c_el = _time.time() - _c_t0
             print(f"    · creative: {_creative_cap} docs ({_c_el:.0f}s)")
         creative = CreativeEngine()

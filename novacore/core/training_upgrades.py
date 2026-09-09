@@ -36,7 +36,11 @@ class TrainingUpgrader:
     def __init__(self, vocab, config=None):
         self.vocab = vocab
         self.config = config or {}
-        up = self.config.get('training_upgrades', {})
+        # training_upgrades may live at config root OR nested under 'defaults'
+        # (config files like config_colab_stream.json keep it inside defaults).
+        up = self.config.get('training_upgrades') or {}
+        if not up:
+            up = (self.config.get('defaults') or {}).get('training_upgrades') or {}
         self.enabled = up.get('enable_svd_embeddings', False)
 
         if not self.enabled:
