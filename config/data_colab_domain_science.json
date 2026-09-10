@@ -29,7 +29,7 @@
   },
 
   "datasets": {
-    "squad_v2": {
+    "rajpurkar/squad_v2": {
       "split": "train",
       "max_rows": null,
       "mode": "stream",
